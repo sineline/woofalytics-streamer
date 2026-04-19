@@ -1,6 +1,7 @@
 services:
   woofalytics:
     build: .
+    privileged: true   # Required for full USB audio (PS Eye 4-ch) visibility inside container
     # GPU access via NVIDIA Container Toolkit
     deploy:
       resources:
@@ -36,6 +37,9 @@ services:
     devices:
       # ALSA sound devices (microphone access)
       - /dev/snd:/dev/snd
+      # Pass individual USB device nodes so the PS Eye appears as hw:1
+      # (adjust Bus/Device numbers if they change after replug: check with lsusb)
+      - /dev/bus/usb/001/008:/dev/bus/usb/001/008
       # Webcam for YouTube live stream video
       - /dev/video0:/dev/video0
     group_add:
