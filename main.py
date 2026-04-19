@@ -22,20 +22,26 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 # ── MJPEG camera streamer ─────────────────────────────────────────────────────
 
 class MJPEGStreamer:
-    """Captures frames from a V4L2 device via ffmpeg and serves them as MJPEG."""
+    """Captures frames from a V4L2 device via ffmpeg and serves them as MJPEG.
+    Device is resolved from settings at stream-start time so Config page changes
+    take effect without a container restart."""
 
     def __init__(self):
         self._lock   = threading.Lock()
         self._frame  = b""
         self._proc   = None
         self._thread = None
-        self._device = os.environ.get("VIDEO_DEVICE", "/dev/video0")
 
-    def _capture_loop(self):
+    def _current_device(self) -> str:
+        # settings.py takes precedence; fall back to env var
+        s = cfg_store.get_public()
+        return s.get("video_device") or os.environ.get("VIDEO_DEVICE", "/dev/video2")
+
+    def _capture_loop(self, device: str):
         cmd = [
             "ffmpeg", "-loglevel", "error",
             "-f", "v4l2", "-framerate", "15",
-            "-i", self._device,
+            "-i", device,
             "-vf", "scale=640:480",
             "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "5", "pipe:1",
         ]
@@ -63,8 +69,20 @@ class MJPEGStreamer:
     def ensure_running(self):
         if self._thread and self._thread.is_alive():
             return
-        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+        device = self._current_device()
+        logger.info(f"Starting MJPEG capture from {device}")
+        self._thread = threading.Thread(target=self._capture_loop, args=(device,), daemon=True)
         self._thread.start()
+
+    def set_device(self, device: str):
+        """Hot-swap to a new device: stop current ffmpeg, next ensure_running picks it up."""
+        if self._proc:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+        with self._lock:
+            self._frame = b""
 
     def get_frame(self) -> bytes:
         with self._lock:
@@ -88,6 +106,7 @@ class MJPEGStreamer:
 
 
 _mjpeg = MJPEGStreamer()
+
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("Main")

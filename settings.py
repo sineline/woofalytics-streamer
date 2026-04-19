@@ -11,7 +11,7 @@ SETTINGS_PATH = os.environ.get("SETTINGS_FILE", "./clips/settings.json")
 
 _DEFAULT = {
     "stream_key":         os.environ.get("YOUTUBE_STREAM_KEY", ""),
-    "video_device":       os.environ.get("VIDEO_DEVICE", "/dev/video0"),
+    "video_device":       os.environ.get("VIDEO_DEVICE", "/dev/video2"),
     "stream_resolution":  "1280x720",
     "stream_fps":         30,
     "stream_bitrate_kbps": 2500,

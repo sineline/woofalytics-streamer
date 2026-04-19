@@ -26,8 +26,8 @@ services:
       # --- YouTube Live Stream ---
       # Paste your stream key from studio.youtube.com -> Go Live -> Stream
       - YOUTUBE_STREAM_KEY=
-      # Webcam device path for ffmpeg video capture
-      - VIDEO_DEVICE=/dev/video0
+      # PS Eye camera is /dev/video2 (laptop built-in is /dev/video0,1 — excluded)
+      - VIDEO_DEVICE=/dev/video2
       # How long after the last bark before the OSD resets to "Monitoring"
       - BARK_QUIET_SECONDS=10
       # Auto-save cooldown in seconds (min time between saved clips)
@@ -40,8 +40,9 @@ services:
       # Pass individual USB device nodes so the PS Eye appears as hw:1
       # (adjust Bus/Device numbers if they change after replug: check with lsusb)
       - /dev/bus/usb/001/008:/dev/bus/usb/001/008
-      # Webcam for YouTube live stream video
-      - /dev/video0:/dev/video0
+      # PS Eye camera — /dev/video2 (run `v4l2-ctl --list-devices` to verify)
+      # Laptop built-in (/dev/video0, /dev/video1) intentionally excluded
+      - /dev/video2:/dev/video2
     group_add:
       - audio
     volumes:
