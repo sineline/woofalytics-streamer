@@ -164,6 +164,7 @@ cython_debug/
 
 # Woofalytics runtime data — never commit recordings or secrets
 clips/*.wav
+clips/*.mp3
 clips/*.db
 clips/settings.json
 /tmp/woof_osd.txt

@@ -291,15 +291,40 @@ class Woofalytics:
         t.start()
 
     def _dump_worker(self, frames, bark_prob, peak_dbfs, avg_dbfs, doa):
+        import subprocess
         os.makedirs("./clips", exist_ok=True)
-        filename = f"./clips/{time.time_ns()}.wav"
-        wf = wave.open(filename, "wb")
-        wf.setnchannels(self._channels)
-        wf.setsampwidth(self._sample_size)
-        wf.setframerate(self._fs)
-        wf.writeframes(b"".join(frames))
-        wf.close()
+        raw_pcm  = b"".join(frames)
+        filename = f"./clips/{time.time_ns()}.mp3"
+        try:
+            # Pipe raw PCM → ffmpeg → MP3 (mono mix-down keeps file small)
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    # Input: interleaved S16_LE PCM from stdin
+                    "-f", "s16le", "-ar", str(self._fs),
+                    "-ac", str(self._channels), "-i", "pipe:0",
+                    # Output: MP3, mix down to mono, VBR quality 4 (~128 kbps)
+                    "-ac", "1", "-q:a", "4",
+                    filename,
+                ],
+                input=raw_pcm,
+                capture_output=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.decode())
+        except Exception as exc:
+            # Fallback: save as WAV so no clip is ever lost
+            self._logger.warning(f"MP3 encode failed ({exc}), falling back to WAV")
+            filename = filename.replace(".mp3", ".wav")
+            wf = wave.open(filename, "wb")
+            wf.setnchannels(self._channels)
+            wf.setsampwidth(self._sample_size)
+            wf.setframerate(self._fs)
+            wf.writeframes(raw_pcm)
+            wf.close()
         self._logger.info(f"Stored {filename}")
+
         duration = len(frames) * self._chunk / self._fs
         event_id = self._bark_logger.log_event(
             timestamp=datetime.datetime.now().isoformat(),
