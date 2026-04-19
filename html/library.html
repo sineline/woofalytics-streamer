@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Woofalytics — Clip Library</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #07080f; --surface: #0f1120; --s2: #161828;
+      --border: rgba(255,255,255,0.07); --amber: #f59e0b;
+      --red: #ef4444; --green: #22c55e; --blue: #3b82f6;
+      --text: #e2e8f0; --muted: #64748b; --r: 14px;
+      --mono: 'JetBrains Mono', monospace;
+    }
+    body { font-family:'Outfit',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; padding:24px; }
+
+    /* ── Top bar ── */
+    .toolbar {
+      display: flex; align-items: center; gap: 12px;
+      margin-bottom: 20px; flex-wrap: wrap;
+    }
+    .toolbar h2 { font-size: 1.1rem; font-weight: 600; }
+    .toolbar-right { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    select, input[type=text] {
+      background: var(--s2); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); padding: 7px 12px; font-family:'Outfit'; font-size:.85rem;
+      outline: none; min-width: 140px;
+    }
+    select:focus, input[type=text]:focus { border-color: var(--amber); }
+    .btn {
+      padding: 7px 16px; border-radius: 8px; border: none; font-family:'Outfit';
+      font-size:.85rem; font-weight: 500; cursor: pointer; transition: all .2s;
+    }
+    .btn-amber  { background: var(--amber); color: #000; }
+    .btn-amber:hover { opacity:.85; }
+    .btn-ghost  { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+    .btn-ghost:hover { color: var(--amber); border-color: var(--amber); }
+    .btn-red    { background: rgba(239,68,68,.15); color: var(--red); border: 1px solid rgba(239,68,68,.3); }
+    .btn-red:hover { background: rgba(239,68,68,.25); }
+
+    /* ── Stats strip ── */
+    .stats { display: flex; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
+    .stat-pill {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 99px; padding: 5px 16px; font-size:.82rem; color: var(--muted);
+    }
+    .stat-pill strong { color: var(--text); }
+
+    /* ── Dogs sidebar + main area ── */
+    .layout { display: grid; grid-template-columns: 220px 1fr; gap: 18px; align-items: start; }
+    @media(max-width:780px){ .layout { grid-template-columns: 1fr; } }
+
+    /* ── Dog list sidebar ── */
+    .dogs-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 16px; }
+    .dogs-panel-title { font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:12px; }
+    .dog-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 10px; border-radius: 10px; cursor: pointer;
+      transition: background .15s; margin-bottom: 4px;
+    }
+    .dog-item:hover { background: var(--s2); }
+    .dog-item.active { background: rgba(245,158,11,.1); }
+    .dog-swatch { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
+    .dog-info { flex: 1; min-width: 0; }
+    .dog-name { font-size:.87rem; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .dog-count { font-size:.72rem; color: var(--muted); }
+    .dog-edit-btn {
+      opacity: 0; background: none; border: none; color: var(--muted);
+      cursor: pointer; font-size:.85rem; padding: 2px 5px; border-radius: 4px;
+      transition: opacity .15s, color .15s;
+    }
+    .dog-item:hover .dog-edit-btn { opacity: 1; }
+    .dog-edit-btn:hover { color: var(--amber); }
+    .add-dog-btn {
+      width: 100%; margin-top: 8px; padding: 7px; border-radius: 8px;
+      background: var(--s2); border: 1px dashed rgba(255,255,255,.12);
+      color: var(--muted); font-family:'Outfit'; font-size:.82rem; cursor: pointer;
+      transition: all .2s;
+    }
+    .add-dog-btn:hover { color: var(--amber); border-color: rgba(245,158,11,.4); }
+
+    /* ── Clips grid ── */
+    .clips-area { min-height: 300px; }
+    .clips-header {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap;
+    }
+    .clips-header h3 { font-size:.95rem; font-weight:600; }
+    .clip-count { font-size:.78rem; color: var(--muted); }
+    .bulk-bar { display: none; gap: 8px; align-items: center; margin-left: auto; }
+    .bulk-bar.visible { display: flex; }
+    .selected-count { font-size:.8rem; color: var(--muted); }
+
+    .clips-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+
+    .clip-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px;
+      transition: border-color .2s;
+      position: relative;
+    }
+    .clip-card:hover { border-color: rgba(255,255,255,.14); }
+    .clip-card.selected { border-color: var(--amber); background: rgba(245,158,11,.04); }
+
+    .clip-select {
+      position: absolute; top: 12px; right: 12px;
+      width: 17px; height: 17px; cursor: pointer; accent-color: var(--amber);
+    }
+
+    .clip-meta { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+    .clip-time { font-size:.78rem; color: var(--muted); font-family: var(--mono); }
+    .dog-badge {
+      font-size:.72rem; font-weight:600; padding: 2px 9px; border-radius: 99px;
+      cursor: default;
+    }
+    .clip-stats { display: flex; gap: 12px; margin-bottom: 10px; }
+    .clip-stat { font-size:.78rem; color: var(--muted); }
+    .clip-stat strong { color: var(--text); font-weight:500; }
+
+    audio { width: 100%; height: 32px; accent-color: var(--amber); display: block; margin-bottom: 10px; }
+
+    .clip-actions { display: flex; gap: 8px; }
+    .tag-select {
+      flex: 1; background: var(--s2); border: 1px solid var(--border); border-radius: 7px;
+      color: var(--text); padding: 5px 8px; font-family:'Outfit'; font-size:.78rem;
+      outline: none; cursor: pointer;
+    }
+    .tag-select:focus { border-color: var(--amber); }
+    .clip-del-btn {
+      background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.2);
+      color: var(--red); border-radius: 7px; padding: 5px 10px;
+      font-size:.8rem; cursor: pointer; font-family:'Outfit'; transition: all .2s;
+    }
+    .clip-del-btn:hover { background: rgba(239,68,68,.25); }
+
+    /* ── Empty / loading ── */
+    .empty { color: var(--muted); text-align: center; padding: 48px; font-size:.9rem; }
+
+    /* ── Inline rename input ── */
+    .rename-input {
+      background: var(--s2); border: 1px solid var(--amber); border-radius: 6px;
+      color: var(--text); font-family:'Outfit'; font-size:.84rem;
+      padding: 3px 8px; width: 100%; outline: none;
+    }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 20px; font-size:.85rem;
+      opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 9998;
+    }
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<script src="/nav.js"></script>
+
+<div class="toolbar">
+  <h2>📼 Clip Library</h2>
+  <div class="toolbar-right">
+    <input type="text" id="search-input" placeholder="Search clips…" oninput="applyFilters()">
+    <select id="sort-select" onchange="applyFilters()">
+      <option value="newest">Newest first</option>
+      <option value="oldest">Oldest first</option>
+      <option value="loudest">Loudest</option>
+      <option value="longest">Longest</option>
+    </select>
+    <button class="btn btn-ghost" onclick="loadAll()">↻ Refresh</button>
+  </div>
+</div>
+
+<div class="stats" id="stats-strip"></div>
+
+<div class="layout">
+
+  <!-- Dogs sidebar -->
+  <div class="dogs-panel">
+    <div class="dogs-panel-title">Dogs</div>
+    <div id="dog-list"></div>
+    <button class="add-dog-btn" onclick="addDog()">＋ Add dog</button>
+  </div>
+
+  <!-- Clips area -->
+  <div class="clips-area">
+    <div class="clips-header">
+      <h3 id="clips-title">All Clips</h3>
+      <span class="clip-count" id="clip-count"></span>
+      <div class="bulk-bar" id="bulk-bar">
+        <span class="selected-count" id="selected-count"></span>
+        <button class="btn btn-red" onclick="bulkDelete()">Delete selected</button>
+        <button class="btn btn-ghost" onclick="clearSelection()">Cancel</button>
+      </div>
+    </div>
+    <div class="clips-grid" id="clips-grid">
+      <div class="empty">Loading clips…</div>
+    </div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+const PALETTE = ['#f59e0b','#3b82f6','#22c55e','#ec4899','#a855f7','#ef4444','#14b8a6','#f97316'];
+let allEvents  = [];
+let allDogs    = [];
+let activeDog  = null;  // null = show all
+let selected   = new Set();
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg, ms=2500) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), ms);
+}
+
+// ── Dog color ─────────────────────────────────────────────────────────────────
+function dogColor(dogId) {
+  const i = allDogs.findIndex(d => d.dog_id === dogId);
+  return PALETTE[(i >= 0 ? i : 0) % PALETTE.length];
+}
+
+// ── Load data ─────────────────────────────────────────────────────────────────
+async function loadAll() {
+  const [dogsR, eventsR] = await Promise.all([
+    fetch('/api/dogs').then(r => r.json()),
+    fetch('/api/events?limit=500').then(r => r.json()),
+  ]);
+  allDogs   = dogsR;
+  allEvents = eventsR;
+  renderDogs();
+  applyFilters();
+  updateStats();
+}
+
+// ── Stats strip ───────────────────────────────────────────────────────────────
+function updateStats() {
+  const totalSize = allEvents.length;
+  const totalDur  = allEvents.reduce((s, e) => s + (e.duration || 0), 0);
+  const withClips = allEvents.filter(e => e.clip_path).length;
+  document.getElementById('stats-strip').innerHTML = `
+    <div class="stat-pill">Events: <strong>${totalSize}</strong></div>
+    <div class="stat-pill">With clips: <strong>${withClips}</strong></div>
+    <div class="stat-pill">Total audio: <strong>${totalDur.toFixed(0)} s</strong></div>
+    <div class="stat-pill">Dogs: <strong>${allDogs.length}</strong></div>
+  `;
+}
+
+// ── Dogs sidebar ──────────────────────────────────────────────────────────────
+function renderDogs() {
+  const list = document.getElementById('dog-list');
+  const counts = {};
+  allEvents.forEach(e => { counts[e.dog_id] = (counts[e.dog_id] || 0) + 1; });
+
+  const allItem = `
+    <div class="dog-item ${activeDog === null ? 'active' : ''}" onclick="selectDog(null)">
+      <div class="dog-swatch" style="background:var(--muted)"></div>
+      <div class="dog-info">
+        <div class="dog-name">All Dogs</div>
+        <div class="dog-count">${allEvents.length} clips</div>
+      </div>
+    </div>`;
+
+  const dogItems = allDogs.map((d, i) => {
+    const color = PALETTE[i % PALETTE.length];
+    const cnt = counts[d.dog_id] || 0;
+    return `
+      <div class="dog-item ${activeDog === d.dog_id ? 'active' : ''}" onclick="selectDog('${d.dog_id}')">
+        <div class="dog-swatch" style="background:${color}"></div>
+        <div class="dog-info">
+          <div class="dog-name" id="dog-name-${d.dog_id}">${d.name}</div>
+          <div class="dog-count">${cnt} clips</div>
+        </div>
+        <button class="dog-edit-btn" onclick="event.stopPropagation();startRename('${d.dog_id}')" title="Rename">✏️</button>
+      </div>`;
+  }).join('');
+
+  list.innerHTML = allItem + dogItems;
+}
+
+function selectDog(dogId) {
+  activeDog = dogId;
+  renderDogs();
+  applyFilters();
+  document.getElementById('clips-title').textContent =
+    dogId ? (allDogs.find(d => d.dog_id === dogId)?.name || dogId) + ' — Clips' : 'All Clips';
+}
+
+// ── Rename dog inline ─────────────────────────────────────────────────────────
+function startRename(dogId) {
+  const el = document.getElementById('dog-name-' + dogId);
+  const old = el.textContent;
+  el.innerHTML = `<input class="rename-input" id="ri-${dogId}" value="${old}">`;
+  const inp = document.getElementById('ri-' + dogId);
+  inp.focus(); inp.select();
+  inp.addEventListener('keydown', async e => {
+    if (e.key === 'Enter') await commitRename(dogId, inp.value);
+    if (e.key === 'Escape') { el.textContent = old; }
+  });
+  inp.addEventListener('blur', () => { if (el.querySelector('input')) el.textContent = old; });
+}
+
+async function commitRename(dogId, newName) {
+  newName = newName.trim();
+  if (!newName) return;
+  await fetch(`/api/dogs/${encodeURIComponent(dogId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: newName }),
+  });
+  // Update local
+  const d = allDogs.find(d => d.dog_id === dogId);
+  if (d) d.name = newName;
+  renderDogs();
+  applyFilters();
+  toast(`Renamed to "${newName}"`);
+}
+
+async function addDog() {
+  const name = prompt('New dog name (leave blank for auto):')?.trim();
+  const r = await fetch('/api/dogs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name || null }),
+  });
+  const { dog_id } = await r.json();
+  await loadAll();
+  toast(`Created "${dog_id}"`);
+}
+
+// ── Clip filtering ────────────────────────────────────────────────────────────
+function applyFilters() {
+  const search = document.getElementById('search-input').value.toLowerCase();
+  const sort   = document.getElementById('sort-select').value;
+
+  let events = activeDog ? allEvents.filter(e => e.dog_id === activeDog) : allEvents;
+  if (search) events = events.filter(e =>
+    (e.dog_id||'').toLowerCase().includes(search) ||
+    (e.timestamp||'').includes(search)
+  );
+
+  events = [...events].sort((a, b) => {
+    if (sort === 'newest')  return new Date(b.timestamp) - new Date(a.timestamp);
+    if (sort === 'oldest')  return new Date(a.timestamp) - new Date(b.timestamp);
+    if (sort === 'loudest') return (b.peak_dbfs||0) - (a.peak_dbfs||0);
+    if (sort === 'longest') return (b.duration||0)  - (a.duration||0);
+    return 0;
+  });
+
+  document.getElementById('clip-count').textContent = `${events.length} clip${events.length !== 1 ? 's' : ''}`;
+  renderClips(events);
+}
+
+// ── Clips grid ────────────────────────────────────────────────────────────────
+function renderClips(events) {
+  const grid = document.getElementById('clips-grid');
+  if (!events.length) {
+    grid.innerHTML = '<div class="empty">No clips found</div>';
+    return;
+  }
+  grid.innerHTML = events.map(ev => buildClipCard(ev)).join('');
+}
+
+function buildClipCard(ev) {
+  const color   = dogColor(ev.dog_id);
+  const dogName = allDogs.find(d => d.dog_id === ev.dog_id)?.name || ev.dog_id || 'Unknown';
+  const clip    = ev.clip_path ? ev.clip_path.replace('./clips/', '') : null;
+  const ts      = ev.timestamp ? new Date(ev.timestamp).toLocaleString() : '—';
+  const dur     = ev.duration  ? ev.duration.toFixed(1) + ' s'    : '—';
+  const peak    = ev.peak_dbfs != null ? ev.peak_dbfs.toFixed(1) + ' dBFS' : '—';
+  const prob    = ev.bark_prob  != null ? (ev.bark_prob * 100).toFixed(0) + '%' : '—';
+  const doa     = ev.doa        != null ? ev.doa.toFixed(0) + '°' : '—';
+  const isSel   = selected.has(ev.id);
+
+  const dogOptions = allDogs.map(d =>
+    `<option value="${d.dog_id}" ${d.dog_id === ev.dog_id ? 'selected' : ''}>${d.name}</option>`
+  ).join('');
+
+  return `
+    <div class="clip-card ${isSel ? 'selected' : ''}" id="card-${ev.id}">
+      <input type="checkbox" class="clip-select" ${isSel ? 'checked' : ''}
+             onchange="toggleSelect(${ev.id}, this.checked)">
+      <div class="clip-meta">
+        <span class="clip-time">${ts}</span>
+        <span class="dog-badge" style="background:${color}22;color:${color}">${dogName}</span>
+      </div>
+      <div class="clip-stats">
+        <div class="clip-stat">Prob <strong>${prob}</strong></div>
+        <div class="clip-stat">Peak <strong>${peak}</strong></div>
+        <div class="clip-stat">Dur <strong>${dur}</strong></div>
+        <div class="clip-stat">DOA <strong>${doa}</strong></div>
+      </div>
+      ${clip
+        ? `<audio controls src="/clips/${clip}" preload="none"></audio>`
+        : `<div style="color:var(--muted);font-size:.78rem;margin-bottom:10px">No audio clip</div>`
+      }
+      <div class="clip-actions">
+        <select class="tag-select" onchange="retagEvent(${ev.id}, this.value)">
+          ${dogOptions}
+        </select>
+        <button class="clip-del-btn" onclick="deleteEvent(${ev.id}, '${clip || ''}')">🗑</button>
+      </div>
+    </div>`;
+}
+
+// ── Selection ────────────────────────────────────────────────────────────────
+function toggleSelect(id, checked) {
+  checked ? selected.add(id) : selected.delete(id);
+  const card = document.getElementById('card-' + id);
+  if (card) card.classList.toggle('selected', checked);
+  const bar = document.getElementById('bulk-bar');
+  bar.classList.toggle('visible', selected.size > 0);
+  document.getElementById('selected-count').textContent = `${selected.size} selected`;
+}
+
+function clearSelection() {
+  selected.forEach(id => {
+    const card = document.getElementById('card-' + id);
+    if (card) { card.classList.remove('selected'); card.querySelector('.clip-select').checked = false; }
+  });
+  selected.clear();
+  document.getElementById('bulk-bar').classList.remove('visible');
+}
+
+// ── CRUD actions ──────────────────────────────────────────────────────────────
+async function retagEvent(eventId, dogId) {
+  await fetch(`/api/events/${eventId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dog_id: dogId }),
+  });
+  const ev = allEvents.find(e => e.id === eventId);
+  if (ev) ev.dog_id = dogId;
+  renderDogs();
+  toast('Clip reassigned');
+}
+
+async function deleteEvent(eventId) {
+  if (!confirm('Delete this clip and its recording?')) return;
+  await fetch(`/api/events/${eventId}`, { method: 'DELETE' });
+  allEvents = allEvents.filter(e => e.id !== eventId);
+  selected.delete(eventId);
+  applyFilters();
+  updateStats();
+  renderDogs();
+  toast('Clip deleted');
+}
+
+async function bulkDelete() {
+  const ids = [...selected];
+  if (!ids.length) return;
+  if (!confirm(`Delete ${ids.length} clip(s)?`)) return;
+  await Promise.all(ids.map(id => fetch(`/api/events/${id}`, { method: 'DELETE' })));
+  allEvents = allEvents.filter(e => !selected.has(e.id));
+  selected.clear();
+  document.getElementById('bulk-bar').classList.remove('visible');
+  applyFilters();
+  updateStats();
+  renderDogs();
+  toast(`${ids.length} clips deleted`);
+}
+
+loadAll();
+</script>
+</body>
+</html>

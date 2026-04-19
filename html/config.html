@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Woofalytics — Config</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #07080f; --surface: #0f1120; --s2: #161828;
+      --border: rgba(255,255,255,0.07); --amber: #f59e0b;
+      --green: #22c55e; --text: #e2e8f0; --muted: #64748b; --r: 14px;
+      --mono: 'JetBrains Mono', monospace;
+    }
+    body { font-family:'Outfit',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; padding:24px; }
+    nav a { color:var(--muted); text-decoration:none; font-size:0.85rem; padding:5px 13px; border-radius:8px; border:1px solid var(--border); transition:all .2s; white-space:nowrap; }
+    nav a:hover, nav a.active { color:var(--amber); border-color:var(--amber); }
+    nav h1 { font-size:1.4rem; font-weight:700; margin-right:auto; }
+    nav h1 span { color:var(--amber); }
+
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    @media(max-width:860px){ .grid{grid-template-columns:1fr;} }
+    .span2 { grid-column:span 2; }
+    @media(max-width:860px){ .span2{grid-column:span 1;} }
+
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:20px 22px; }
+    .card-title { font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:16px; }
+
+    /* Read-only config table */
+    .cfg { width:100%; border-collapse:collapse; font-size:.86rem; }
+    .cfg td { padding:7px 0; vertical-align:middle; }
+    .cfg td:first-child { color:var(--muted); width:55%; padding-right:10px; }
+    .cfg td:last-child  { font-family:var(--mono); font-size:.8rem; word-break:break-all; }
+    .cfg tr { border-bottom:1px solid var(--border); }
+    .cfg tr:last-child { border-bottom:none; }
+    .tag-set   { background:#1a3a1a; color:var(--green); font-size:.72rem; padding:2px 8px; border-radius:99px; font-family:'Outfit'; }
+    .tag-unset { background:#3a1a1a; color:#f87171; font-size:.72rem; padding:2px 8px; border-radius:99px; font-family:'Outfit'; }
+    .tag-env   { background:#1a2a3a; color:#60a5fa; font-size:.72rem; padding:2px 8px; border-radius:99px; font-family:'Outfit'; }
+
+    /* Editable controls */
+    .edit-row { display:flex; flex-direction:column; gap:6px; margin-bottom:18px; }
+    .edit-row:last-of-type { margin-bottom:0; }
+    .edit-label { font-size:.82rem; color:var(--muted); display:flex; justify-content:space-between; }
+    .edit-label strong { color:var(--text); }
+    input[type=range] {
+      width:100%; accent-color:var(--amber); height:6px;
+      background:var(--s2); border-radius:99px; outline:none; border:none; cursor:pointer;
+    }
+    input[type=number] {
+      background:var(--s2); border:1px solid var(--border); border-radius:8px;
+      color:var(--text); padding:6px 10px; font-family:var(--mono); font-size:.85rem;
+      width:100%; outline:none;
+    }
+    input[type=number]:focus { border-color:var(--amber); }
+
+    .btn-save {
+      margin-top:18px; width:100%; padding:10px;
+      background:var(--amber); color:#000; font-family:'Outfit'; font-size:.9rem; font-weight:600;
+      border:none; border-radius:10px; cursor:pointer; transition:opacity .2s;
+    }
+    .btn-save:hover { opacity:.85; }
+    .save-msg { font-size:.8rem; margin-top:8px; color:var(--green); min-height:18px; text-align:center; }
+
+    /* docker-compose snippet */
+    .compose-block {
+      background:var(--s2); border-radius:10px; padding:16px;
+      font-family:var(--mono); font-size:.75rem; line-height:1.8;
+      color:#94a3b8; overflow-x:auto; position:relative;
+    }
+    .compose-block .key   { color:#60a5fa; }
+    .compose-block .val   { color:#86efac; }
+    .compose-block .cmt   { color:#475569; }
+    .copy-btn {
+      position:absolute; top:10px; right:10px;
+      background:var(--surface); border:1px solid var(--border); border-radius:6px;
+      color:var(--muted); font-size:.72rem; padding:3px 10px; cursor:pointer; font-family:'Outfit';
+      transition:all .2s;
+    }
+    .copy-btn:hover { color:var(--amber); border-color:var(--amber); }
+
+    /* Restart notice */
+    .notice {
+      border-left:3px solid var(--amber); background:rgba(245,158,11,.07);
+      padding:12px 16px; border-radius:0 8px 8px 0; font-size:.84rem; line-height:1.6;
+      margin-bottom:16px;
+    }
+    .notice code { font-family:var(--mono); color:var(--amber); font-size:.78rem; }
+  </style>
+  <style>
+    /* ── Extra styles for device selectors ── */
+    .field { display:flex; flex-direction:column; gap:6px; margin-bottom:14px; }
+    .field:last-child { margin-bottom:0; }
+    .field label { font-size:.82rem; color:var(--muted); font-weight:500; }
+    .field-hint  { font-size:.72rem; color:var(--muted); }
+    input[type=text], input[type=password], select {
+      background:var(--s2); border:1px solid var(--border); border-radius:8px;
+      color:var(--text); padding:8px 12px; font-family:'Outfit'; font-size:.88rem;
+      outline:none; width:100%;
+    }
+    input:focus, select:focus { border-color:var(--amber); }
+    .key-row { display:flex; gap:8px; }
+    .key-row input { flex:1; }
+    .eye-btn {
+      background:var(--s2); border:1px solid var(--border); border-radius:8px;
+      color:var(--muted); padding:8px 12px; cursor:pointer; flex-shrink:0;
+      transition:all .2s;
+    }
+    .eye-btn:hover { color:var(--amber); border-color:var(--amber); }
+    .section-save-msg { font-size:.78rem; color:var(--green); min-height:16px; margin-top:4px; }
+  </style>
+</head>
+<body>
+
+<script src="/nav.js"></script>
+
+<div class="grid">
+
+  <!-- Runtime-editable settings -->
+  <div class="card">
+    <div class="card-title">⚡ Runtime — No Restart Needed</div>
+    <div class="edit-row">
+      <div class="edit-label">Bark Detection Threshold<strong id="thresh-val">88%</strong></div>
+      <input type="range" id="thresh" min="50" max="99" step="1" value="88"
+             oninput="document.getElementById('thresh-val').textContent=this.value+'%'">
+    </div>
+    <div class="edit-row">
+      <div class="edit-label">Auto-Save Cooldown (seconds)<strong id="cooldown-val">30 s</strong></div>
+      <input type="range" id="cooldown" min="5" max="300" step="5" value="30"
+             oninput="document.getElementById('cooldown-val').textContent=this.value+' s'">
+    </div>
+    <button class="btn-save" onclick="saveRuntime()">Save</button>
+    <div class="save-msg" id="save-msg"></div>
+  </div>
+
+  <!-- Mic device selector -->
+  <div class="card">
+    <div class="card-title">🎙️ Microphone Device</div>
+    <div class="field">
+      <label>Input Device</label>
+      <select id="mic-device-sel"></select>
+      <div class="field-hint">Restart container for this to take effect</div>
+    </div>
+    <div class="field">
+      <label>Channels</label>
+      <select id="mic-ch">
+        <option value="1">1 (mono)</option>
+        <option value="2">2 (stereo)</option>
+        <option value="4" selected>4 (PS Eye / quad)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Sample Rate (Hz)</label>
+      <select id="mic-rate">
+        <option value="8000">8 000</option>
+        <option value="16000" selected>16 000</option>
+        <option value="44100">44 100</option>
+        <option value="48000">48 000</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>DOA Array Spacing (λ)</label>
+      <input type="text" id="mic-spacing" value="0.1">
+      <div class="field-hint">Inter-mic spacing as fraction of wavelength (PS Eye ≈ 0.62 at 16 kHz)</div>
+    </div>
+    <button class="btn-save" onclick="saveMic()">Save Mic Settings</button>
+    <div class="section-save-msg" id="mic-msg"></div>
+  </div>
+
+  <!-- Stream credentials (shortcut — full control at /stream) -->
+  <div class="card">
+    <div class="card-title">📺 YouTube Stream Key</div>
+    <div class="field">
+      <label>Stream Key</label>
+      <div class="key-row">
+        <input type="password" id="yt-key" placeholder="xxxx-xxxx-xxxx-xxxx" autocomplete="off">
+        <button class="eye-btn" onclick="toggleKey()">👁</button>
+      </div>
+      <div class="field-hint">From <a href="https://studio.youtube.com" target="_blank" style="color:var(--amber)">studio.youtube.com</a> → Go Live → Stream key. Stored in Docker volume, not in env.</div>
+    </div>
+    <div class="field">
+      <label>Video Device</label>
+      <select id="vid-device-sel"></select>
+    </div>
+    <button class="btn-save" onclick="saveStream()">Save Stream Settings</button>
+    <div class="section-save-msg" id="stream-msg"></div>
+    <div style="margin-top:12px;text-align:center">
+      <a href="/stream" style="color:var(--amber);font-size:.82rem">→ Full streaming controls</a>
+    </div>
+  </div>
+
+  <!-- Storage config (read-only) -->
+  <div class="card">
+    <div class="card-title">💾 Storage</div>
+    <table class="cfg" id="storage-cfg"></table>
+  </div>
+
+  <!-- docker-compose snippet -->
+  <div class="card span2">
+    <div class="card-title">📋 docker-compose.yml Snippet</div>
+    <div class="notice">
+      Settings marked "restart required" need <code>docker compose up</code> (no rebuild) to apply.
+      Runtime-safe settings above apply immediately.
+    </div>
+    <div class="compose-block" id="compose-snippet" style="position:relative">
+      <button class="copy-btn" onclick="copyCompose()">Copy</button>
+      <div id="compose-lines">Loading...</div>
+    </div>
+  </div>
+
+</div>
+
+
+<script>
+let currentConfig = null;
+let currentSettings = null;
+
+function row(label, value, badge) {
+  const b = badge ? ` <span class="${badge[0]}">${badge[1]}</span>` : '';
+  return `<tr><td>${label}</td><td>${value ?? '—'}${b}</td></tr>`;
+}
+
+// ── Key toggle ──────────────────────────────────────────────────────────────
+function toggleKey() {
+  const inp = document.getElementById('yt-key');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+// ── Load all data ────────────────────────────────────────────────────────────
+async function loadAll() {
+  const [cfg, settings, adevs, vdevs] = await Promise.all([
+    fetch('/api/config').then(r => r.json()),
+    fetch('/api/settings').then(r => r.json()),
+    fetch('/api/devices').then(r => r.json()),
+    fetch('/api/devices/video').then(r => r.json()),
+  ]);
+  currentConfig   = cfg;
+  currentSettings = settings;
+
+  // ── Runtime sliders ────────────────────────────────────────────────────────
+  const thresh = Math.round(cfg.detection.bark_threshold * 100);
+  document.getElementById('thresh').value = thresh;
+  document.getElementById('thresh-val').textContent = thresh + '%';
+  document.getElementById('cooldown').value = cfg.detection.auto_save_cooldown;
+  document.getElementById('cooldown-val').textContent = cfg.detection.auto_save_cooldown + ' s';
+
+  // ── Mic device dropdown ────────────────────────────────────────────────────
+  const msel = document.getElementById('mic-device-sel');
+  msel.innerHTML = adevs.length
+    ? adevs.filter(d => d.max_input_channels > 0).map(d =>
+        `<option value="${d.index}" ${d.is_selected ? 'selected' : ''}>[${d.index}] ${d.name} (${d.max_input_channels} ch)</option>`
+      ).join('')
+    : `<option>No input devices found</option>`;
+
+  // Channels & sample rate
+  const chEl = document.getElementById('mic-ch');
+  const ch = settings.mic_channels || cfg.mic.channels;
+  if ([...chEl.options].some(o => +o.value === ch)) chEl.value = ch;
+
+  const rateEl = document.getElementById('mic-rate');
+  const rate = settings.mic_sample_rate || cfg.mic.sample_rate;
+  if ([...rateEl.options].some(o => +o.value === rate)) rateEl.value = rate;
+
+  document.getElementById('mic-spacing').value =
+    settings.mic_array_spacing ?? cfg.mic.array_spacing;
+
+  // ── Video device dropdown ──────────────────────────────────────────────────
+  const vsel = document.getElementById('vid-device-sel');
+  const curVid = settings.video_device || cfg.stream.video_device;
+  vsel.innerHTML = vdevs.length
+    ? vdevs.map(d => `<option value="${d.path}" ${d.path === curVid ? 'selected' : ''}>${d.path}</option>`).join('')
+    : `<option value="${curVid}">${curVid}</option>`;
+
+  // Stream key — show placeholder if set
+  document.getElementById('yt-key').placeholder =
+    settings.stream_key_set ? '(already set — enter new to change)' : 'xxxx-xxxx-xxxx-xxxx';
+
+  // ── Storage table ──────────────────────────────────────────────────────────
+  document.getElementById('storage-cfg').innerHTML = [
+    row('Events DB',      cfg.storage.events_db),
+    row('Clip pre-roll',  cfg.storage.clip_past_seconds + ' s'),
+    row('Clip post-roll', cfg.storage.clip_future_seconds + ' s'),
+  ].join('');
+
+  buildCompose(cfg, settings);
+}
+
+// ── Compose snippet ──────────────────────────────────────────────────────────
+function buildCompose(cfg, s) {
+  const lines = [
+    `<span class="cmt">    # ── Microphone ──────────────────────────────</span>`,
+    `    - <span class="key">MIC_CHANNELS</span>=<span class="val">${s.mic_channels ?? cfg.mic.channels}</span>`,
+    `    - <span class="key">MIC_SAMPLE_RATE</span>=<span class="val">${s.mic_sample_rate ?? cfg.mic.sample_rate}</span>`,
+    `    - <span class="key">MIC_ARRAY_SPACING</span>=<span class="val">${s.mic_array_spacing ?? cfg.mic.array_spacing}</span>`,
+    `<span class="cmt">    # ── Detection ───────────────────────────────</span>`,
+    `    - <span class="key">AUTO_SAVE_COOLDOWN</span>=<span class="val">${cfg.detection.auto_save_cooldown}</span>`,
+    `<span class="cmt">    # ── YouTube Stream ──────────────────────────</span>`,
+    `    - <span class="key">YOUTUBE_STREAM_KEY</span>=<span class="val">${s.stream_key_set ? '&lt;stored in volume&gt;' : ''}</span>`,
+    `    - <span class="key">VIDEO_DEVICE</span>=<span class="val">${s.video_device ?? cfg.stream.video_device}</span>`,
+    `    - <span class="key">BARK_QUIET_SECONDS</span>=<span class="val">${s.bark_quiet_seconds ?? cfg.stream.bark_quiet_seconds}</span>`,
+    `<span class="cmt">    # ── Storage ─────────────────────────────────</span>`,
+    `    - <span class="key">EVENTS_DB</span>=<span class="val">${cfg.storage.events_db}</span>`,
+  ];
+  document.getElementById('compose-lines').innerHTML = lines.join('\n');
+}
+
+function copyCompose() {
+  const cfg = currentConfig; const s = currentSettings;
+  if (!cfg) return;
+  const text = [
+    `    # Microphone`,
+    `    - MIC_CHANNELS=${s?.mic_channels ?? cfg.mic.channels}`,
+    `    - MIC_SAMPLE_RATE=${s?.mic_sample_rate ?? cfg.mic.sample_rate}`,
+    `    - MIC_ARRAY_SPACING=${s?.mic_array_spacing ?? cfg.mic.array_spacing}`,
+    `    # Detection`,
+    `    - AUTO_SAVE_COOLDOWN=${cfg.detection.auto_save_cooldown}`,
+    `    # YouTube`,
+    `    - VIDEO_DEVICE=${s?.video_device ?? cfg.stream.video_device}`,
+    `    - BARK_QUIET_SECONDS=${s?.bark_quiet_seconds ?? cfg.stream.bark_quiet_seconds}`,
+    `    # Storage`,
+    `    - EVENTS_DB=${cfg.storage.events_db}`,
+  ].join('\n');
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.querySelector('.copy-btn');
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+  });
+}
+
+// ── Save helpers ──────────────────────────────────────────────────────────────
+async function saveTo(endpoint, payload, msgId, method='POST') {
+  const msg = document.getElementById(msgId);
+  try {
+    const r = await fetch(endpoint, {
+      method, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json();
+    msg.style.color = 'var(--green)';
+    msg.textContent = '✓ Saved';
+    setTimeout(() => { msg.textContent = ''; }, 3000);
+    return data;
+  } catch(e) {
+    msg.style.color = '#f87171';
+    msg.textContent = 'Save failed: ' + e.message;
+  }
+}
+
+async function saveRuntime() {
+  const thresh   = parseFloat(document.getElementById('thresh').value) / 100;
+  const cooldown = parseInt(document.getElementById('cooldown').value, 10);
+  const cfg = await saveTo('/api/config', { bark_threshold: thresh, auto_save_cooldown: cooldown }, 'save-msg');
+  if (cfg) { currentConfig = cfg; buildCompose(cfg, currentSettings); }
+}
+
+async function saveMic() {
+  await saveTo('/api/settings', {
+    mic_device_index:  parseInt(document.getElementById('mic-device-sel').value),
+    mic_channels:      parseInt(document.getElementById('mic-ch').value),
+    mic_sample_rate:   parseInt(document.getElementById('mic-rate').value),
+    mic_array_spacing: parseFloat(document.getElementById('mic-spacing').value),
+  }, 'mic-msg');
+}
+
+async function saveStream() {
+  const key   = document.getElementById('yt-key').value.trim();
+  const vdev  = document.getElementById('vid-device-sel').value;
+  const patch = { video_device: vdev };
+  if (key) patch.stream_key = key;
+  const updated = await saveTo('/api/settings', patch, 'stream-msg');
+  if (updated) { currentSettings = updated; }
+  // Clear key field for security
+  document.getElementById('yt-key').value = '';
+}
+
+loadAll();
+setInterval(loadAll, 20000);
+</script>
+</body>
+</html>

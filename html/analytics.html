@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Woofalytics — Analytics</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:      #07080f;
+      --surface: #0f1120;
+      --s2:      #161828;
+      --border:  rgba(255,255,255,0.07);
+      --amber:   #f59e0b;
+      --text:    #e2e8f0;
+      --muted:   #64748b;
+      --r:       16px;
+      --palette: #f59e0b,#3b82f6,#22c55e,#ec4899,#a855f7,#ef4444,#14b8a6,#f97316;
+    }
+    body { font-family:'Outfit',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; padding:24px; }
+
+    /* ── Nav ── */
+    nav a { color:var(--muted); text-decoration:none; font-size:0.9rem; padding:6px 14px; border-radius:8px; border:1px solid var(--border); transition:all .2s; }
+    nav a:hover, nav a.active { color:var(--amber); border-color:var(--amber); }
+    nav h1 { font-size:1.5rem; font-weight:700; margin-right:auto; }
+    nav h1 span { color:var(--amber); }
+
+    /* ── KPI strip ── */
+    .kpi-row { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:20px; }
+    @media(max-width:700px){ .kpi-row{grid-template-columns:repeat(2,1fr);} }
+    .kpi { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:18px 20px; }
+    .kpi-label { font-size:0.72rem; letter-spacing:.07em; text-transform:uppercase; color:var(--muted); margin-bottom:8px; }
+    .kpi-value { font-size:2rem; font-weight:700; color:var(--amber); }
+    .kpi-sub   { font-size:0.78rem; color:var(--muted); margin-top:4px; }
+
+    /* ── Grid ── */
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+    @media(max-width:900px){ .grid{grid-template-columns:1fr;} }
+    .span2 { grid-column:span 2; }
+    @media(max-width:900px){ .span2{grid-column:span 1;} }
+
+    /* ── Card ── */
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:22px 24px; }
+    .card-title { font-size:.75rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:18px; }
+
+    /* ── DOA canvas ── */
+    #doa-canvas { display:block; margin:0 auto; }
+    .doa-legend { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; justify-content:center; }
+    .doa-legend-item { display:flex; align-items:center; gap:6px; font-size:0.82rem; }
+    .doa-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+
+    /* ── Dog cards ── */
+    .dogs-row { display:flex; flex-wrap:wrap; gap:14px; }
+    .dog-card {
+      flex:1; min-width:180px;
+      background:var(--s2); border:1px solid var(--border); border-radius:12px;
+      padding:16px 18px;
+    }
+    .dog-card .dog-name { font-size:1rem; font-weight:600; margin-bottom:10px; display:flex; align-items:center; gap:8px; }
+    .dog-swatch { width:12px; height:12px; border-radius:50%; }
+    .dog-stat { font-size:0.82rem; color:var(--muted); margin-top:5px; }
+    .dog-stat strong { color:var(--text); }
+    .dog-bar-wrap { margin-top:10px; height:6px; background:var(--border); border-radius:99px; overflow:hidden; }
+    .dog-bar { height:100%; border-radius:99px; transition:width .6s ease; }
+
+    /* ── Chart ── */
+    .chart-wrap { position:relative; height:200px; }
+    .chart-wrap-tall { position:relative; height:260px; }
+
+    .empty { color:var(--muted); text-align:center; padding:32px; font-size:.9rem; }
+  </style>
+</head>
+<body>
+
+<script src="/nav.js"></script>
+<!-- KPI strip -->
+<div class="kpi-row">
+  <div class="kpi">
+    <div class="kpi-label">Barks Today</div>
+    <div class="kpi-value" id="kpi-today">—</div>
+    <div class="kpi-sub">since midnight</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Total Events</div>
+    <div class="kpi-value" id="kpi-total">—</div>
+    <div class="kpi-sub">all time</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Dogs Identified</div>
+    <div class="kpi-value" id="kpi-dogs">—</div>
+    <div class="kpi-sub">unique voices</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Avg Loudness</div>
+    <div class="kpi-value" id="kpi-loud">—</div>
+    <div class="kpi-sub">peak dBFS</div>
+  </div>
+</div>
+
+<div class="grid">
+
+  <!-- DOA Location map -->
+  <div class="card">
+    <div class="card-title">Sound Direction (DOA) — Microphone View</div>
+    <canvas id="doa-canvas" width="340" height="200"></canvas>
+    <div class="doa-legend" id="doa-legend"></div>
+    <div style="font-size:.72rem;color:var(--muted);text-align:center;margin-top:10px">
+      🎙️ Using PS Eye 4-mic array — real DOA angles. Tune <code>MIC_ARRAY_SPACING</code> in compose for best accuracy.
+    </div>
+  </div>
+
+  <!-- Noise contribution donut -->
+  <div class="card">
+    <div class="card-title">Noise Contribution by Dog</div>
+    <div class="chart-wrap">
+      <canvas id="donut-chart"></canvas>
+    </div>
+    <div class="dogs-row" id="dog-cards" style="margin-top:18px"></div>
+  </div>
+
+  <!-- Hourly activity heatmap -->
+  <div class="card span2">
+    <div class="card-title">Bark Activity by Hour of Day (last 7 days)</div>
+    <div class="chart-wrap-tall">
+      <canvas id="hourly-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Daily trend -->
+  <div class="card span2">
+    <div class="card-title">Daily Bark Count (last 30 days)</div>
+    <div class="chart-wrap">
+      <canvas id="daily-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Loudness per dog -->
+  <div class="card span2">
+    <div class="card-title">Average Peak Loudness per Dog (dBFS — louder = closer to 0)</div>
+    <div class="chart-wrap">
+      <canvas id="loud-chart"></canvas>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const PALETTE = ['#f59e0b','#3b82f6','#22c55e','#ec4899','#a855f7','#ef4444','#14b8a6','#f97316'];
+const CHART_DEFAULTS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: { legend: { display: false } },
+};
+const GRID_COLOR = 'rgba(255,255,255,0.05)';
+const TICK_COLOR = '#64748b';
+
+// ── DOA Visualisation ────────────────────────────────────────────────────────
+function drawDOA(doaData, dogColors) {
+  const canvas = document.getElementById('doa-canvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const cx = W / 2, cy = H - 20;
+  const R = Math.min(W / 2, H) - 20;
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Background arc
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, Math.PI, 0);
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Grid arcs
+  [0.33, 0.66, 1].forEach(f => {
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * f, Math.PI, 0);
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  });
+
+  // Angle lines every 30°
+  for (let deg = 0; deg <= 180; deg += 30) {
+    const rad = (deg * Math.PI / 180) + Math.PI;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + R * Math.cos(rad), cy + R * Math.sin(rad));
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // Label
+    const lx = cx + (R + 12) * Math.cos(rad);
+    const ly = cy + (R + 12) * Math.sin(rad);
+    ctx.fillStyle = '#64748b';
+    ctx.font = '10px Outfit';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(deg + '°', lx, ly);
+  }
+
+  // Mic indicator
+  ctx.beginPath();
+  ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+  ctx.fillStyle = '#f59e0b';
+  ctx.fill();
+
+  // Plot each dog's average DOA
+  Object.entries(doaData).forEach(([dogId, angles], i) => {
+    if (!angles.length) return;
+    const avgDeg = angles.reduce((a, b) => a + b, 0) / angles.length;
+    const rad = (avgDeg * Math.PI / 180) + Math.PI;
+    const r = R * 0.75;
+    const x = cx + r * Math.cos(rad);
+    const y = cy + r * Math.sin(rad);
+    const color = dogColors[dogId] || PALETTE[i % PALETTE.length];
+
+    // Scatter faint individual points
+    angles.forEach(a => {
+      const ar = (a * Math.PI / 180) + Math.PI;
+      const pr = R * (0.3 + Math.random() * 0.5);
+      ctx.beginPath();
+      ctx.arc(cx + pr * Math.cos(ar), cy + pr * Math.sin(ar), 3, 0, Math.PI * 2);
+      ctx.fillStyle = color + '55';
+      ctx.fill();
+    });
+
+    // Avg position marker
+    ctx.beginPath();
+    ctx.arc(x, y, 11, 0, Math.PI * 2);
+    ctx.fillStyle = color + 'cc';
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 9px Outfit';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(dogId.replace('Dog ', ''), x, y);
+  });
+}
+
+// ── Charts ───────────────────────────────────────────────────────────────────
+let donutChart, hourlyChart, dailyChart, loudChart;
+
+function buildDonut(dogs) {
+  if (donutChart) donutChart.destroy();
+  const ctx = document.getElementById('donut-chart').getContext('2d');
+  donutChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: dogs.map(d => d.dog_id),
+      datasets: [{
+        data: dogs.map(d => d.bark_count),
+        backgroundColor: dogs.map((_, i) => PALETTE[i % PALETTE.length]),
+        borderWidth: 2,
+        borderColor: '#0f1120',
+      }]
+    },
+    options: {
+      ...CHART_DEFAULTS,
+      plugins: {
+        legend: { display: true, position: 'right', labels: { color: TICK_COLOR, font: { family: 'Outfit' } } }
+      },
+      cutout: '65%',
+    }
+  });
+}
+
+function buildHourly(hourly) {
+  if (hourlyChart) hourlyChart.destroy();
+  const labels = Array.from({length: 24}, (_, i) => i + ':00');
+  const data   = Array(24).fill(0);
+  hourly.forEach(h => { data[h.hour] = h.count; });
+  const ctx = document.getElementById('hourly-chart').getContext('2d');
+  hourlyChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: data.map(v => v > 0 ? '#f59e0b' + 'cc' : 'rgba(255,255,255,0.04)'),
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      ...CHART_DEFAULTS,
+      scales: {
+        x: { ticks: { color: TICK_COLOR, maxRotation: 45 }, grid: { color: GRID_COLOR } },
+        y: { ticks: { color: TICK_COLOR, stepSize: 1 }, grid: { color: GRID_COLOR }, beginAtZero: true }
+      }
+    }
+  });
+}
+
+function buildDaily(daily) {
+  if (dailyChart) dailyChart.destroy();
+  const ctx = document.getElementById('daily-chart').getContext('2d');
+  dailyChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: daily.map(d => d.date),
+      datasets: [{
+        data: daily.map(d => d.count),
+        borderColor: '#f59e0b',
+        backgroundColor: 'rgba(245,158,11,0.1)',
+        fill: true,
+        tension: 0.4,
+        pointBackgroundColor: '#f59e0b',
+        pointRadius: 4,
+      }]
+    },
+    options: {
+      ...CHART_DEFAULTS,
+      scales: {
+        x: { ticks: { color: TICK_COLOR }, grid: { color: GRID_COLOR } },
+        y: { ticks: { color: TICK_COLOR, stepSize: 1 }, grid: { color: GRID_COLOR }, beginAtZero: true }
+      }
+    }
+  });
+}
+
+function buildLoudness(dogs) {
+  if (loudChart) loudChart.destroy();
+  const ctx = document.getElementById('loud-chart').getContext('2d');
+  loudChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: dogs.map(d => d.dog_id),
+      datasets: [{
+        label: 'Avg Peak dBFS',
+        data: dogs.map(d => d.avg_peak_dbfs != null ? d.avg_peak_dbfs.toFixed(1) : null),
+        backgroundColor: dogs.map((_, i) => PALETTE[i % PALETTE.length] + 'cc'),
+        borderRadius: 6,
+      }]
+    },
+    options: {
+      ...CHART_DEFAULTS,
+      indexAxis: 'y',
+      scales: {
+        x: {
+          ticks: { color: TICK_COLOR, callback: v => v + ' dB' },
+          grid: { color: GRID_COLOR },
+          max: 0,
+        },
+        y: { ticks: { color: TICK_COLOR }, grid: { display: false } }
+      }
+    }
+  });
+}
+
+// ── Dog cards ────────────────────────────────────────────────────────────────
+function buildDogCards(dogs) {
+  const container = document.getElementById('dog-cards');
+  container.innerHTML = '';
+  const maxCount = Math.max(...dogs.map(d => d.bark_count), 1);
+  dogs.forEach((d, i) => {
+    const color = PALETTE[i % PALETTE.length];
+    const el = document.createElement('div');
+    el.className = 'dog-card';
+    el.innerHTML = `
+      <div class="dog-name">
+        <div class="dog-swatch" style="background:${color}"></div>
+        🐕 ${d.dog_id}
+      </div>
+      <div class="dog-stat">Barks: <strong>${d.bark_count}</strong></div>
+      <div class="dog-stat">Avg prob: <strong>${((d.avg_prob||0)*100).toFixed(0)}%</strong></div>
+      <div class="dog-stat">Avg loudness: <strong>${d.avg_peak_dbfs != null ? d.avg_peak_dbfs.toFixed(1)+'dBFS' : '—'}</strong></div>
+      <div class="dog-stat">Avg direction: <strong>${d.avg_doa != null ? d.avg_doa.toFixed(0)+'°' : '—'}</strong></div>
+      <div class="dog-stat">Last seen: <strong>${d.last_seen ? new Date(d.last_seen).toLocaleString() : '—'}</strong></div>
+      <div class="dog-bar-wrap">
+        <div class="dog-bar" style="width:${(d.bark_count/maxCount*100).toFixed(0)}%;background:${color}"></div>
+      </div>
+    `;
+    container.appendChild(el);
+  });
+}
+
+// ── DOA legend ───────────────────────────────────────────────────────────────
+function buildDOALegend(dogs, dogColors) {
+  const el = document.getElementById('doa-legend');
+  el.innerHTML = '';
+  dogs.forEach((d, i) => {
+    const color = dogColors[d.dog_id] || PALETTE[i % PALETTE.length];
+    const item = document.createElement('div');
+    item.className = 'doa-legend-item';
+    item.innerHTML = `<div class="doa-dot" style="background:${color}"></div>${d.dog_id}`;
+    el.appendChild(item);
+  });
+}
+
+// ── Main data load ────────────────────────────────────────────────────────────
+async function loadAnalytics() {
+  try {
+    const r = await fetch('/api/analytics');
+    const { dogs, totals } = await r.json();
+
+    // KPIs
+    document.getElementById('kpi-today').textContent = totals.today_count ?? 0;
+    document.getElementById('kpi-total').textContent = dogs.reduce((s, d) => s + d.bark_count, 0);
+    document.getElementById('kpi-dogs').textContent  = dogs.length;
+    const avgLoud = dogs.length
+      ? (dogs.reduce((s, d) => s + (d.avg_peak_dbfs || 0), 0) / dogs.length).toFixed(1)
+      : '—';
+    document.getElementById('kpi-loud').textContent = avgLoud !== '—' ? avgLoud + ' dB' : '—';
+
+    // Dog color map
+    const dogColors = {};
+    dogs.forEach((d, i) => { dogColors[d.dog_id] = PALETTE[i % PALETTE.length]; });
+
+    // DOA
+    const doaData = {};
+    dogs.forEach(d => { doaData[d.dog_id] = []; });
+    (totals.doa_points || []).forEach(p => {
+      if (!doaData[p.dog_id]) doaData[p.dog_id] = [];
+      doaData[p.dog_id].push(p.doa);
+    });
+    drawDOA(doaData, dogColors);
+    buildDOALegend(dogs, dogColors);
+
+    // Charts
+    if (dogs.length)      { buildDonut(dogs); buildDogCards(dogs); buildLoudness(dogs); }
+    if (totals.hourly?.length) buildHourly(totals.hourly);
+    if (totals.daily?.length)  buildDaily(totals.daily);
+
+  } catch (e) {
+    console.error('Analytics fetch failed:', e);
+  }
+}
+
+loadAnalytics();
+setInterval(loadAnalytics, 30_000);
+</script>
+</body>
+</html>

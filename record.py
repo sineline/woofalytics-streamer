@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import threading
 import subprocess
@@ -21,6 +22,10 @@ from pyargus.directionEstimation import (
 )
 
 from event_filter import EventFilter
+import settings as cfg_store
+from logger import BarkLogger
+from streamer import YouTubeStreamer
+from uploader import Uploader
 
 # Replace with your unique event name and IFTTT Webhooks API key
 IFTTT_EVENT_NAME = "woof"
@@ -34,10 +39,13 @@ class Woofalytics:
         self._logger = logging.getLogger("Woofalytics")
         self._recording_device_index = self.find_andrea_mic_array()
 
-        self._chunk = 441
         self._sample_format = pyaudio.paInt16  # 16 bits per sample
-        self._channels = 2
-        self._fs = 44_100
+        # MIC_CHANNELS=1 for mono webcam mics; 2 for the Andrea stereo array
+        self._channels = int(os.environ.get("MIC_CHANNELS", "2"))
+        # MIC_SAMPLE_RATE: use 48000 for USB webcam mics, 44100 for Andrea array
+        self._fs = int(os.environ.get("MIC_SAMPLE_RATE", "44100"))
+        # Chunk = 10ms of audio at the configured sample rate
+        self._chunk = int(self._fs * 0.01)
         self._model_sample_rate = 16_000
 
         self._clip_past_context_seconds = clip_past_context_seconds
@@ -56,6 +64,9 @@ class Woofalytics:
         self._model.eval()
         self._logger.debug(f"Model loaded as: {self._model}")
 
+        # Pre-build the resampler once (avoids recreating it on every inference call)
+        self._resampler = T.Resample(self._fs, self._model_sample_rate, dtype=torch.float32)
+
         self._model_window_size = 6
         self._model_window_overlap = 3
         self._model_last_pred = {
@@ -68,47 +79,97 @@ class Woofalytics:
 
         self._bark_prob_threshold = 0.88
 
-        # DOA
-        d = 0.1  # Inter element spacing [lambda]
-        M = 2  # number of antenna elements in the antenna system (ULA)
+        # Auto-save: save a clip for every confirmed bark, with a cooldown
+        self._auto_save_cooldown = int(os.environ.get("AUTO_SAVE_COOLDOWN", "30"))
+        self._last_auto_save_time = 0.0
+        self._store_bark_info = {"prob": 0.0, "peak_dbfs": -60.0, "avg_dbfs": -60.0, "doa": 90.0}
+
+        # Telemetry exposed to the debug/config pages
+        self._start_time = time.time()
+        self._current_audio_level = {"peak_dbfs": -60.0, "avg_dbfs": -60.0, "updated_at": ""}
+        self._last_doa = {"doa1": 90, "doa2": 90, "doa3": 90}
+
+        # Logging + streaming
+        self._bark_logger = BarkLogger()
+        self._uploader    = Uploader(bark_logger=self._bark_logger)
+        self._streamer    = YouTubeStreamer()
+        # Stream is started on-demand via /api/stream — not auto-started here.
+        # It will auto-start if YOUTUBE_STREAM_KEY was set in env at boot.
+        if cfg_store.get()["stream_key"]:
+            self._streamer.start()
+
+        # DOA — use all available mic channels for better angular resolution.
+        # PS Eye has 4 mics (~13 mm spacing); Andrea has 2 (~40 mm spacing).
+        # d is inter-element spacing as a fraction of wavelength (tune per device).
+        d = float(os.environ.get("MIC_ARRAY_SPACING", "0.1"))
+        M = self._channels if self._channels >= 2 else 2
         array_alignment = np.arange(0, M, 1) * d
         incident_angles = np.arange(0, 181, 1)
         self.ula_scanning_vectors = gen_ula_scanning_vectors(
             array_alignment, incident_angles
         )
+        self._logger.info(
+            f"DOA: {M}-element ULA, spacing={d}λ — using {self._channels} mic channel(s)"
+        )
 
     def find_andrea_mic_array(self) -> int:
-        p = pyaudio.PyAudio()  # Create an interface to PortAudio
-        # Get the list of input devices
+        """Find the preferred microphone.
+
+        Searches for a device whose name contains the MIC_DEVICE_HINT env var
+        (default: 'Andrea PureAudio'). Falls back to the first available input
+        device so the container works with any USB microphone.
+        """
+        mic_hint = os.environ.get("MIC_DEVICE_HINT", "Andrea PureAudio")
+        p = pyaudio.PyAudio()
         info = p.get_host_api_info_by_index(0)
         numdevices = info.get("deviceCount")
 
-        for i in range(0, numdevices):
+        first_input_index = -1
+        first_input_name = None
+        hint_match_index = -1
+
+        for i in range(numdevices):
             device_info = p.get_device_info_by_index(i)
             if device_info.get("maxInputChannels") > 0:
                 name = device_info.get("name")
                 self._logger.debug(f"Device index {i}: {name}")
-                if name.startswith("Andrea PureAudio"):
-                    self._logger.info(f"Found {name} at index {i}")
-                    return i
+                if first_input_index == -1:
+                    first_input_index = i
+                    first_input_name = name
+                if mic_hint.lower() in name.lower():
+                    self._logger.info(f"Found matching mic '{name}' at index {i}")
+                    hint_match_index = i
+                    break
 
-        self._logger.warning(
-            "Couldn't find 'Andrea PureAudio' recording device. Please make sure it's attached and functioning."
-        )
+        p.terminate()
+
+        if hint_match_index != -1:
+            return hint_match_index
+
+        if first_input_index != -1:
+            self._logger.warning(
+                f"No device matching '{mic_hint}' found. "
+                f"Falling back to '{first_input_name}' at index {first_input_index}."
+            )
+            return first_input_index
+
+        self._logger.error("No input recording devices found.")
         return -1
 
     def set_mic_volume(self, volume_percentage: int = 75):
-        command = "amixer get Capture".split(" ")
-        output = subprocess.check_output(command, text=True)
-        self._logger.debug(output)
-
-        command = f"amixer set Capture {volume_percentage}% unmute".split(" ")
-        output = subprocess.check_output(command, text=True)
-        self._logger.info(output)
-
-        command = "amixer get Capture".split(" ")
-        output = subprocess.check_output(command, text=True)
-        self._logger.debug(output)
+        """Set capture volume via amixer. Non-fatal: logs a warning if amixer fails
+        (e.g. inside a container without the right ALSA card exposed)."""
+        try:
+            output = subprocess.check_output("amixer get Capture".split(), text=True)
+            self._logger.debug(output)
+            output = subprocess.check_output(
+                f"amixer set Capture {volume_percentage}% unmute".split(), text=True
+            )
+            self._logger.info(output)
+            output = subprocess.check_output("amixer get Capture".split(), text=True)
+            self._logger.debug(output)
+        except Exception as exc:
+            self._logger.warning(f"Could not set mic volume via amixer: {exc}")
 
     def start(self):
         self._worker_thread = threading.Thread(target=self._recording_worker)
@@ -193,7 +254,14 @@ class Woofalytics:
                 if (
                     len(record_buffer) >= past_frames_count + future_frames_count
                 ):  # have enought frames to dump to a file
-                    self._dump_file(record_buffer.copy())
+                    info = self._store_bark_info
+                    self._dump_file(
+                        record_buffer.copy(),
+                        bark_prob=info["prob"],
+                        peak_dbfs=info["peak_dbfs"],
+                        avg_dbfs=info["avg_dbfs"],
+                        doa=info["doa"],
+                    )
                     record_buffer = record_buffer[-past_frames_count:]
 
                     self._store_flag = False
@@ -208,6 +276,7 @@ class Woofalytics:
 
     def stop(self):
         self._stop_flag = True
+        self._streamer.stop()
         if self._worker_thread:
             self._worker_thread.join()
 
@@ -215,19 +284,35 @@ class Woofalytics:
         self._logger.info("Got a store request...")
         self._store_flag = True
 
-    def _dump_file(self, frames):
-        t = threading.Thread(target=self._dump_worker, args=[frames])
+    def _dump_file(self, frames, bark_prob=0.0, peak_dbfs=-60.0, avg_dbfs=-60.0, doa=90.0):
+        t = threading.Thread(
+            target=self._dump_worker, args=[frames, bark_prob, peak_dbfs, avg_dbfs, doa]
+        )
         t.start()
 
-    def _dump_worker(self, frames):
-        filename = f"{time.time_ns()}.wav"
-        # Save the recorded data as a WAV file
+    def _dump_worker(self, frames, bark_prob, peak_dbfs, avg_dbfs, doa):
+        os.makedirs("./clips", exist_ok=True)
+        filename = f"./clips/{time.time_ns()}.wav"
         wf = wave.open(filename, "wb")
         wf.setnchannels(self._channels)
         wf.setsampwidth(self._sample_size)
         wf.setframerate(self._fs)
         wf.writeframes(b"".join(frames))
+        wf.close()
         self._logger.info(f"Stored {filename}")
+        duration = len(frames) * self._chunk / self._fs
+        event_id = self._bark_logger.log_event(
+            timestamp=datetime.datetime.now().isoformat(),
+            clip_path=filename,
+            bark_prob=bark_prob,
+            peak_dbfs=peak_dbfs,
+            avg_dbfs=avg_dbfs,
+            duration=duration,
+            doa=doa,
+        )
+        # Async upload (non-blocking; mode checked inside uploader)
+        if event_id and filename:
+            self._uploader.enqueue(event_id, filename)
 
     def get_last_pred(self):
         return self._model_last_pred
@@ -239,19 +324,26 @@ class Woofalytics:
     def infer_worker(self, frames):
         audio_array = np.copy(np.frombuffer(b"".join(frames), dtype=np.int16))
         del frames
-        audio_array = audio_array.reshape((2, -1), order="F")
 
-        corr = corr_matrix_estimate(audio_array.T, imp="fast")
-        doa1 = np.argmax(DOA_Bartlett(corr, self.ula_scanning_vectors))
-        doa2 = np.argmax(DOA_Capon(corr, self.ula_scanning_vectors))
-        doa3 = np.argmax(DOA_MEM(corr, self.ula_scanning_vectors))
+        if self._channels >= 2:
+            # Multi-channel: compute DOA across all mic channels.
+            # PS Eye 4-mic array gives real directional estimates.
+            audio_array = audio_array.reshape((self._channels, -1), order="F")
+            corr = corr_matrix_estimate(audio_array.T, imp="fast")
+            doa1 = np.argmax(DOA_Bartlett(corr, self.ula_scanning_vectors))
+            doa2 = np.argmax(DOA_Capon(corr, self.ula_scanning_vectors))
+            doa3 = np.argmax(DOA_MEM(corr, self.ula_scanning_vectors))
+            # Model only needs single channel — use channel 0
+            audio_array = audio_array[0:1, :]
+        else:
+            # Truly mono (should not happen with PS Eye): no DOA
+            audio_array = audio_array.reshape((1, -1))
+            doa1 = doa2 = doa3 = 90
 
         audio_array_torch = torch.from_numpy(audio_array)
         audio_array_float = audio_array_torch / torch.iinfo(torch.int16).max
-        resampler = T.Resample(
-            self._fs, self._model_sample_rate, dtype=audio_array_float.dtype
-        )
-        resampled_waveform = resampler(audio_array_float)
+        # Use the pre-built resampler (avoids rebuilding on every call)
+        resampled_waveform = self._resampler(audio_array_float)
         mel_spectrogram = torchaudio.compliance.kaldi.fbank(
             num_mel_bins=80,
             frame_length=25,
@@ -261,7 +353,7 @@ class Woofalytics:
         mel_spectrogram = mel_spectrogram.flatten().unsqueeze(0)
 
         if mel_spectrogram.size()[1] != 480:
-            self._logger.error("Wrong size for LMEL features", mel_spectrogram.size())
+            self._logger.error(f"Wrong size for LMEL features: {mel_spectrogram.size()}")
             return
 
         with torch.no_grad():
@@ -277,9 +369,30 @@ class Woofalytics:
 
             self._model_last_pred["datetime"] = datetime.datetime.now().isoformat()
 
+        # Always update live audio level and DOA telemetry
+        arr_np = audio_array_float.numpy()
+        peak = float(np.max(np.abs(arr_np)))
+        rms  = float(np.sqrt(np.mean(arr_np ** 2)))
+        peak_dbfs_now = round(20 * np.log10(peak + 1e-9), 1)
+        avg_dbfs_now  = round(20 * np.log10(rms  + 1e-9), 1)
+        self._current_audio_level = {
+            "peak_dbfs": peak_dbfs_now,
+            "avg_dbfs":  avg_dbfs_now,
+            "updated_at": datetime.datetime.now().isoformat(),
+        }
+        self._last_doa = {"doa1": int(doa1), "doa2": int(doa2), "doa3": int(doa3)}
+
         if pred >= self._bark_prob_threshold:
+            # Compute loudness of this audio window
+            arr = audio_array_float.numpy()
+            peak = float(np.max(np.abs(arr)))
+            rms  = float(np.sqrt(np.mean(arr ** 2)))
+            peak_dbfs = 20 * np.log10(peak + 1e-9)
+            avg_dbfs  = 20 * np.log10(rms  + 1e-9)
+
             print(
-                f"[{datetime.datetime.now().isoformat()}, {doa1:03d}, {doa2:03d}, {doa3:03d}]: *** BARKING ***: {pred}"
+                f"[{datetime.datetime.now().isoformat()}, {doa1:03d}, {doa2:03d}, {doa3:03d}]: "
+                f"*** BARKING ***: {pred:.3f}  peak={peak_dbfs:.1f}dBFS"
             )
             with open("./log.txt", "a") as f:
                 f.write(
@@ -291,9 +404,21 @@ class Woofalytics:
                 del last_preds[0]
 
             if sum(last_preds) >= 3:
+                # Update stream overlay
+                self._streamer.set_state(barking=True, prob=pred)
+
+                # Auto-save clip (with cooldown to avoid flooding disk)
+                now = time.time()
+                if now - self._last_auto_save_time > self._auto_save_cooldown:
+                    self._last_auto_save_time = now
+                    self._store_bark_info = {
+                        "prob": pred, "peak_dbfs": peak_dbfs,
+                        "avg_dbfs": avg_dbfs, "doa": float((doa1 + doa2 + doa3) / 3),
+                    }
+                    self.store_clip()
+
                 if self.ef.fire():
                     self.ifttt_event()
-                    self.store_clip()
         else:
             if len(last_preds) > 0:
                 del last_preds[0]
@@ -316,3 +441,119 @@ class Woofalytics:
             self._logger.info("IFTTT applet triggered successfully.")
         else:
             self._logger.warning("Failed to trigger the IFTTT applet.")
+
+    # ── Telemetry / config API helpers ────────────────────────────────────────
+
+    def list_audio_devices(self):
+        """Return all PyAudio input devices visible in the container."""
+        p = pyaudio.PyAudio()
+        devices = []
+        try:
+            for i in range(p.get_device_count()):
+                d = p.get_device_info_by_index(i)
+                if d.get("maxInputChannels", 0) > 0:
+                    devices.append({
+                        "index":               i,
+                        "name":                d["name"],
+                        "max_input_channels":  d["maxInputChannels"],
+                        "default_sample_rate": int(d["defaultSampleRate"]),
+                        "is_selected":         i == self._recording_device_index,
+                    })
+        finally:
+            p.terminate()
+        return devices
+
+    def get_debug_info(self):
+        import platform
+
+        # Resolve selected device name
+        device_name = "Unknown"
+        try:
+            p = pyaudio.PyAudio()
+            d = p.get_device_info_by_index(self._recording_device_index)
+            device_name = d["name"]
+            p.terminate()
+        except Exception:
+            pass
+
+        # GPU info
+        gpu: dict = {"available": torch.cuda.is_available()}
+        if gpu["available"]:
+            try:
+                gpu["name"] = torch.cuda.get_device_name(0)
+                props = torch.cuda.get_device_properties(0)
+                gpu["memory_total_mb"] = props.total_memory // (1024 * 1024)
+                gpu["memory_used_mb"]  = torch.cuda.memory_allocated(0) // (1024 * 1024)
+            except Exception:
+                pass
+
+        return {
+            "device": {
+                "index":         self._recording_device_index,
+                "name":          device_name,
+                "channels":      self._channels,
+                "sample_rate":   self._fs,
+                "chunk_samples": self._chunk,
+                "latency_ms":    round(self._chunk / self._fs * 1000, 1),
+            },
+            "audio_level": self._current_audio_level,
+            "last_pred":   self._model_last_pred,
+            "last_doa":    self._last_doa,
+            "model": {
+                "path":       "./models/traced_model.pt",
+                "window_ms":  self._model_window_size,
+                "overlap_ms": self._model_window_overlap,
+                "threshold":  self._bark_prob_threshold,
+                "sample_rate": self._model_sample_rate,
+            },
+            "threads": {
+                "recording_alive":  self._worker_thread.is_alive() if self._worker_thread else False,
+                "streamer_running": not self._streamer._stop_flag,
+            },
+            "gpu": gpu,
+            "system": {
+                "python":        platform.python_version(),
+                "torch":         torch.__version__,
+                "uptime_seconds": int(time.time() - self._start_time),
+            },
+        }
+
+    def get_config(self):
+        return {
+            "mic": {
+                "device_hint":    os.environ.get("MIC_DEVICE_HINT", "Andrea PureAudio"),
+                "channels":       self._channels,
+                "sample_rate":    self._fs,
+                "array_spacing":  float(os.environ.get("MIC_ARRAY_SPACING", "0.1")),
+                "alsa_device":    os.environ.get("MIC_ALSA_DEVICE", "hw:1,0"),
+            },
+            "detection": {
+                "bark_threshold":    self._bark_prob_threshold,
+                "auto_save_cooldown": self._auto_save_cooldown,
+            },
+            "stream": {
+                "youtube_key_set":    bool(os.environ.get("YOUTUBE_STREAM_KEY", "")),
+                "video_device":       os.environ.get("VIDEO_DEVICE", "/dev/video0"),
+                "bark_quiet_seconds": int(os.environ.get("BARK_QUIET_SECONDS", "10")),
+            },
+            "storage": {
+                "events_db":          os.environ.get("EVENTS_DB", "./clips/events.db"),
+                "clip_past_seconds":  self._clip_past_context_seconds,
+                "clip_future_seconds": self._clip_future_context_seconds,
+            },
+        }
+
+    def set_config(self, data: dict):
+        """Apply runtime-safe config changes (no restart needed)."""
+        if "bark_threshold" in data:
+            val = float(data["bark_threshold"])
+            if 0.1 <= val <= 1.0:
+                self._bark_prob_threshold = val
+                self._logger.info(f"bark_threshold updated → {val}")
+        if "auto_save_cooldown" in data:
+            val = int(data["auto_save_cooldown"])
+            if val >= 0:
+                self._auto_save_cooldown = val
+                self._logger.info(f"auto_save_cooldown updated → {val}s")
+        return self.get_config()
+

@@ -1,0 +1,46 @@
+services:
+  woofalytics:
+    build: .
+    # GPU access via NVIDIA Container Toolkit
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Match the USB webcam mic by name substring.
+      # Change to "Andrea PureAudio" if using the original hardware.
+      - MIC_DEVICE_HINT=USB Camera
+      # Webcam mic is mono; set to 2 for the Andrea stereo array.
+      # Note: DOA estimation is skipped when MIC_CHANNELS != 2.
+      # hw:1,0 reports exactly 4 channels and 16000 Hz — no other values accepted.
+      - MIC_CHANNELS=4
+      # USB webcam mics typically support 48000 Hz, not 44100.
+      # Use 44100 for the Andrea PureAudio array.
+      - MIC_SAMPLE_RATE=16000
+      # --- YouTube Live Stream ---
+      # Paste your stream key from studio.youtube.com -> Go Live -> Stream
+      - YOUTUBE_STREAM_KEY=
+      # Webcam device path for ffmpeg video capture
+      - VIDEO_DEVICE=/dev/video0
+      # How long after the last bark before the OSD resets to "Monitoring"
+      - BARK_QUIET_SECONDS=10
+      # Auto-save cooldown in seconds (min time between saved clips)
+      - AUTO_SAVE_COOLDOWN=30
+    ports:
+      - "8000:8000"
+    devices:
+      # ALSA sound devices (microphone access)
+      - /dev/snd:/dev/snd
+      # Webcam for YouTube live stream video
+      - /dev/video0:/dev/video0
+    group_add:
+      - audio
+    volumes:
+      # Recorded WAV clips are persisted on the host under ./clips/
+      - ./clips:/app/clips
+    restart: unless-stopped

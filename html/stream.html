@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Woofalytics — Stream</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #07080f; --surface: #0f1120; --s2: #161828;
+      --border: rgba(255,255,255,0.07); --amber: #f59e0b;
+      --red: #ef4444; --green: #22c55e; --blue: #3b82f6;
+      --text: #e2e8f0; --muted: #64748b; --r: 14px;
+      --mono: 'JetBrains Mono', monospace;
+    }
+    body { font-family:'Outfit',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; padding:24px; }
+
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    @media(max-width:820px){ .grid{grid-template-columns:1fr;} }
+    .span2 { grid-column:span 2; }
+    @media(max-width:820px){ .span2{grid-column:span 1;} }
+
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:22px 24px; }
+    .card-title { font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:18px; }
+
+    /* ── Big status hero ── */
+    .stream-hero {
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px;
+    }
+    .stream-status-label {
+      display: flex; align-items: center; gap: 14px;
+    }
+    .big-dot {
+      width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
+      background: var(--muted);
+      transition: background .4s;
+    }
+    .big-dot.live   { background: var(--red); box-shadow: 0 0 14px rgba(239,68,68,.6); animation: bigpulse .8s infinite alternate; }
+    .big-dot.stopped { background: var(--muted); }
+    @keyframes bigpulse { from{transform:scale(1)} to{transform:scale(1.25);opacity:.7} }
+    .stream-label   { font-size: 1.5rem; font-weight: 700; }
+    .stream-sublabel { font-size: .82rem; color: var(--muted); margin-top: 4px; font-family: var(--mono); }
+
+    .btn-xl {
+      padding: 12px 32px; border-radius: 10px; border: none;
+      font-family:'Outfit'; font-size: 1rem; font-weight: 600;
+      cursor: pointer; transition: all .2s; flex-shrink: 0;
+    }
+    .btn-start { background: var(--green); color: #000; }
+    .btn-start:hover { opacity: .85; }
+    .btn-stop  { background: var(--red); color: #fff; }
+    .btn-stop:hover  { opacity: .85; }
+    .btn-disabled { background: var(--s2); color: var(--muted); cursor: not-allowed; }
+
+    /* ── Form fields ── */
+    .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+    .field:last-child { margin-bottom: 0; }
+    .field label { font-size: .82rem; color: var(--muted); font-weight: 500; }
+    .field-hint  { font-size: .73rem; color: var(--muted); margin-top: 2px; }
+
+    input[type=text], input[type=password], select, input[type=time], input[type=number] {
+      background: var(--s2); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); padding: 8px 12px; font-family:'Outfit'; font-size: .88rem;
+      outline: none; width: 100%;
+    }
+    input:focus, select:focus { border-color: var(--amber); }
+    .key-row { display: flex; gap: 8px; }
+    .key-row input { flex: 1; }
+    .eye-btn {
+      background: var(--s2); border: 1px solid var(--border); border-radius: 8px;
+      color: var(--muted); padding: 8px 12px; cursor: pointer; transition: all .2s;
+      flex-shrink: 0;
+    }
+    .eye-btn:hover { color: var(--amber); border-color: var(--amber); }
+
+    .btn-save {
+      width: 100%; padding: 10px; border-radius: 10px; border: none;
+      background: var(--amber); color: #000; font-family:'Outfit'; font-size: .9rem;
+      font-weight: 600; cursor: pointer; transition: opacity .2s; margin-top: 18px;
+    }
+    .btn-save:hover { opacity: .85; }
+    .save-msg { font-size: .78rem; color: var(--green); min-height: 18px; text-align: center; margin-top: 6px; }
+
+    /* ── Auto-stream toggles ── */
+    .radio-group { display: flex; flex-direction: column; gap: 10px; }
+    .radio-opt {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border);
+      cursor: pointer; transition: border-color .2s, background .2s;
+    }
+    .radio-opt:hover { border-color: rgba(245,158,11,.3); background: rgba(245,158,11,.03); }
+    .radio-opt input { accent-color: var(--amber); width: 16px; height: 16px; flex-shrink: 0; }
+    .radio-opt .ro-label { font-size: .88rem; font-weight: 500; }
+    .radio-opt .ro-sub   { font-size: .74rem; color: var(--muted); }
+
+    /* Schedule sub-row */
+    .schedule-row {
+      display: flex; align-items: center; gap: 10px; margin-top: 10px;
+      padding: 10px 14px; background: var(--s2); border-radius: 8px;
+      font-size: .84rem; color: var(--muted);
+    }
+    .schedule-row input { width: 100px; }
+
+    /* ── Error notice ── */
+    .err-box {
+      background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.25);
+      border-radius: 10px; padding: 12px 16px; font-size: .82rem; color: #fca5a5;
+      font-family: var(--mono); display: none;
+    }
+    .err-box.show { display: block; }
+
+    /* ── Quality grid ── */
+    .quality-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+
+    /* ── YouTube link ── */
+    .yt-link {
+      display: flex; align-items: center; gap: 10px;
+      padding: 14px 18px; background: rgba(239,68,68,.08);
+      border: 1px solid rgba(239,68,68,.2); border-radius: 12px;
+      text-decoration: none; color: var(--text); font-size: .88rem;
+      transition: background .2s;
+    }
+    .yt-link:hover { background: rgba(239,68,68,.15); }
+    .yt-icon { font-size: 1.6rem; flex-shrink: 0; }
+
+    /* ── KV list ── */
+    .kv { width:100%; border-collapse:collapse; font-size:.85rem; }
+    .kv td { padding:7px 0; vertical-align:middle; }
+    .kv td:first-child { color:var(--muted); width:50%; }
+    .kv td:last-child  { font-family:var(--mono); font-size:.8rem; }
+    .kv tr { border-bottom:1px solid var(--border); }
+    .kv tr:last-child { border-bottom:none; }
+  </style>
+</head>
+<body>
+
+<script src="/nav.js"></script>
+
+<div class="grid">
+
+  <!-- Stream status hero -->
+  <div class="card span2">
+    <div class="stream-hero">
+      <div class="stream-status-label">
+        <div class="big-dot stopped" id="big-dot"></div>
+        <div>
+          <div class="stream-label" id="stream-label">Stream Offline</div>
+          <div class="stream-sublabel" id="stream-sub">Not broadcasting</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <button class="btn-xl btn-start" id="btn-start" onclick="startStream()">▶ Go Live</button>
+        <button class="btn-xl btn-stop"  id="btn-stop"  onclick="stopStream()" style="display:none">⏹ Stop</button>
+      </div>
+    </div>
+    <div class="err-box" id="err-box" style="margin-top:14px"></div>
+  </div>
+
+  <!-- Stream key + video device -->
+  <div class="card">
+    <div class="card-title">🔑 Stream Credentials</div>
+
+    <div class="field">
+      <label>YouTube Stream Key</label>
+      <div class="key-row">
+        <input type="password" id="stream-key" placeholder="xxxx-xxxx-xxxx-xxxx" autocomplete="off">
+        <button class="eye-btn" onclick="toggleKey()">👁</button>
+      </div>
+      <div class="field-hint">
+        Get your key at <a href="https://studio.youtube.com" target="_blank" style="color:var(--amber)">studio.youtube.com</a>
+        → Go Live → Stream → Stream key. Saved locally, never sent to us.
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Video Device</label>
+      <select id="video-device"></select>
+    </div>
+
+    <button class="btn-save" onclick="saveCredentials()">Save Credentials</button>
+    <div class="save-msg" id="cred-msg"></div>
+  </div>
+
+  <!-- Auto-stream mode -->
+  <div class="card">
+    <div class="card-title">⚙️ Auto-Stream Mode</div>
+    <div class="radio-group">
+      <label class="radio-opt">
+        <input type="radio" name="auto_stream" value="off">
+        <div><div class="ro-label">Manual only</div>
+          <div class="ro-sub">Start and stop the stream using the button above</div></div>
+      </label>
+      <label class="radio-opt">
+        <input type="radio" name="auto_stream" value="on_bark">
+        <div><div class="ro-label">On bark detection</div>
+          <div class="ro-sub">Stream starts automatically when barking is detected</div></div>
+      </label>
+      <label class="radio-opt">
+        <input type="radio" name="auto_stream" value="always">
+        <div><div class="ro-label">Always on</div>
+          <div class="ro-sub">Stream runs 24 / 7 continuously</div></div>
+      </label>
+      <label class="radio-opt">
+        <input type="radio" name="auto_stream" value="scheduled">
+        <div><div class="ro-label">Scheduled</div>
+          <div class="ro-sub">Stream only during a time window each day</div></div>
+      </label>
+    </div>
+    <div class="schedule-row" id="schedule-row" style="display:none">
+      From <input type="time" id="sched-start" value="08:00">
+      to   <input type="time" id="sched-end"   value="22:00">
+    </div>
+    <button class="btn-save" onclick="saveAutoStream()">Save Mode</button>
+    <div class="save-msg" id="auto-msg"></div>
+  </div>
+
+  <!-- Quality settings -->
+  <div class="card">
+    <div class="card-title">📐 Quality & Encoding</div>
+    <div class="quality-grid">
+      <div class="field">
+        <label>Resolution</label>
+        <select id="resolution">
+          <option value="1920x1080">1080p</option>
+          <option value="1280x720" selected>720p</option>
+          <option value="854x480">480p</option>
+          <option value="640x360">360p</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Frame Rate</label>
+        <select id="fps">
+          <option value="30" selected>30 fps</option>
+          <option value="25">25 fps</option>
+          <option value="15">15 fps</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Bitrate (kbps)</label>
+        <input type="number" id="bitrate" value="2500" min="500" max="8000" step="250">
+      </div>
+    </div>
+    <div class="field" style="margin-top:8px">
+      <label>OSD Reset Delay (s)</label>
+      <input type="number" id="bark-quiet" value="10" min="3" max="120">
+      <div class="field-hint">How long "BARKING!" stays on screen after last bark</div>
+    </div>
+    <button class="btn-save" onclick="saveQuality()">Save Quality</button>
+    <div class="save-msg" id="quality-msg"></div>
+  </div>
+
+  <!-- YouTube Studio link + current status -->
+  <div class="card">
+    <div class="card-title">📊 Stream Info</div>
+    <table class="kv" id="stream-kv">
+      <tr><td>Status</td><td>—</td></tr>
+    </table>
+    <div style="margin-top:18px">
+      <a class="yt-link" href="https://studio.youtube.com" target="_blank">
+        <span class="yt-icon">▶️</span>
+        <div>
+          <div style="font-weight:600">YouTube Studio</div>
+          <div style="font-size:.76rem;color:var(--muted)">Manage your live stream & check viewer count</div>
+        </div>
+      </a>
+    </div>
+    <div style="margin-top:12px">
+      <a class="yt-link" href="https://www.youtube.com/live_dashboard" target="_blank">
+        <span class="yt-icon">📡</span>
+        <div>
+          <div style="font-weight:600">Live Dashboard</div>
+          <div style="font-size:.76rem;color:var(--muted)">Real-time stream health & chat</div>
+        </div>
+      </a>
+    </div>
+  </div>
+
+  <!-- Archive Upload -->
+  <div class="card span2">
+    <div class="card-title">☁️ Archive Upload — Async Clip Backup</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:18px">
+      <div style="background:var(--s2);border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:.72rem;color:var(--muted);margin-bottom:6px">MODE</div>
+        <div style="font-size:1rem;font-weight:700" id="up-mode">—</div>
+      </div>
+      <div style="background:var(--s2);border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:.72rem;color:var(--muted);margin-bottom:6px">UPLOADED</div>
+        <div style="font-size:1rem;font-weight:700;color:var(--green)" id="up-ok">—</div>
+      </div>
+      <div style="background:var(--s2);border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:.72rem;color:var(--muted);margin-bottom:6px">QUEUED / FAILED</div>
+        <div style="font-size:1rem;font-weight:700;color:var(--amber)" id="up-q">—</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+      <!-- Mode selector -->
+      <div>
+        <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px">Upload Mode</div>
+        <div class="radio-group">
+          <label class="radio-opt">
+            <input type="radio" name="upload_mode" value="off" checked>
+            <div><div class="ro-label">Off</div><div class="ro-sub">Clips stored locally only</div></div>
+          </label>
+          <label class="radio-opt">
+            <input type="radio" name="upload_mode" value="s3">
+            <div><div class="ro-label">S3-compatible</div><div class="ro-sub">AWS S3, Backblaze B2, MinIO, Wasabi</div></div>
+          </label>
+          <label class="radio-opt">
+            <input type="radio" name="upload_mode" value="sftp">
+            <div><div class="ro-label">SFTP</div><div class="ro-sub">Any SSH server you control</div></div>
+          </label>
+        </div>
+        <button class="btn-save" onclick="saveUploadMode()">Save Mode</button>
+        <div class="save-msg" id="upmode-msg"></div>
+      </div>
+
+      <!-- Credential panels -->
+      <div>
+        <!-- S3 -->
+        <div id="up-s3-fields" style="display:none">
+          <div class="field"><label>Endpoint URL <span style="color:var(--muted);font-size:.75em">(blank = AWS)</span></label>
+            <input type="text" id="s3-endpoint" placeholder="https://s3.us-west-002.backblazeb2.com"></div>
+          <div class="field"><label>Bucket</label>
+            <input type="text" id="s3-bucket" placeholder="my-bark-archive"></div>
+          <div class="field"><label>Prefix</label>
+            <input type="text" id="s3-prefix" value="woofalytics/"></div>
+          <div class="field"><label>Access Key ID</label>
+            <input type="text" id="s3-key" autocomplete="off"></div>
+          <div class="field"><label>Secret Access Key</label>
+            <div class="key-row">
+              <input type="password" id="s3-secret" autocomplete="off">
+              <button class="eye-btn" onclick="togglePwd('s3-secret')">👁</button>
+            </div>
+          </div>
+          <button class="btn-save" onclick="saveS3()">Save S3 Settings</button>
+          <div class="save-msg" id="s3-msg"></div>
+        </div>
+        <!-- SFTP -->
+        <div id="up-sftp-fields" style="display:none">
+          <div class="field"><label>Host</label>
+            <input type="text" id="sftp-host" placeholder="192.168.1.50"></div>
+          <div style="display:grid;grid-template-columns:3fr 1fr;gap:8px;margin-bottom:14px">
+            <div class="field" style="margin:0"><label>Username</label><input type="text" id="sftp-user"></div>
+            <div class="field" style="margin:0"><label>Port</label><input type="number" id="sftp-port" value="22"></div>
+          </div>
+          <div class="field"><label>Password</label>
+            <div class="key-row">
+              <input type="password" id="sftp-pwd" autocomplete="off">
+              <button class="eye-btn" onclick="togglePwd('sftp-pwd')">👁</button>
+            </div>
+          </div>
+          <div class="field"><label>Private Key Path</label>
+            <input type="text" id="sftp-keypath" placeholder="/root/.ssh/id_rsa"></div>
+          <div class="field"><label>Remote Directory</label>
+            <input type="text" id="sftp-dir" value="/upload/woofalytics"></div>
+          <button class="btn-save" onclick="saveSFTP()">Save SFTP Settings</button>
+          <div class="save-msg" id="sftp-msg"></div>
+        </div>
+        <!-- Off -->
+        <div id="up-off-msg" style="color:var(--muted);font-size:.84rem;padding-top:12px">
+          Select S3 or SFTP to configure upload credentials.
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+let isRunning = false;
+
+function fmtDur(isoStart) {
+  if (!isoStart) return '—';
+  const sec = Math.floor((Date.now() - new Date(isoStart)) / 1000);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return `${h}h ${m}m ${s}s`;
+}
+
+// ── Status poll ───────────────────────────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const r   = await fetch('/api/stream');
+    const d   = await r.json();
+    isRunning = d.running;
+
+    const dot = document.getElementById('big-dot');
+    const lbl = document.getElementById('stream-label');
+    const sub = document.getElementById('stream-sub');
+    const err = document.getElementById('err-box');
+    const bs  = document.getElementById('btn-start');
+    const bst = document.getElementById('btn-stop');
+
+    if (d.running) {
+      dot.className = 'big-dot live';
+      lbl.textContent = '🔴 LIVE';
+      sub.textContent = 'Duration: ' + fmtDur(d.started_at);
+      bs.style.display  = 'none';
+      bst.style.display = '';
+    } else {
+      dot.className = 'big-dot stopped';
+      lbl.textContent = 'Stream Offline';
+      sub.textContent = d.stream_key_set ? 'Ready to go live' : '⚠️ Stream key not configured';
+      bs.style.display  = '';
+      bst.style.display = 'none';
+      if (!d.stream_key_set) bs.className = 'btn-xl btn-disabled';
+      else bs.className = 'btn-xl btn-start';
+    }
+
+    if (d.last_error) {
+      err.textContent = '⚠️ ' + d.last_error;
+      err.classList.add('show');
+    } else {
+      err.classList.remove('show');
+    }
+
+    // KV table
+    document.getElementById('stream-kv').innerHTML = [
+      ['Status',      d.running ? '🔴 Live' : 'Offline'],
+      ['Video device', d.video_device],
+      ['Resolution',  d.resolution],
+      ['FPS',         d.fps],
+      ['Bitrate',     d.bitrate_kbps + ' kbps'],
+      ['Key set',     d.stream_key_set ? '✓ Yes' : '✗ No'],
+      ['Duration',    fmtDur(d.started_at)],
+    ].map(([k, v]) => `<tr><td>${k}</td><td>${v ?? '—'}</td></tr>`).join('');
+
+  } catch(e) { console.error(e); }
+}
+
+// ── Stream start / stop ───────────────────────────────────────────────────────
+async function startStream() {
+  await fetch('/api/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'start' }),
+  });
+  pollStatus();
+}
+
+async function stopStream() {
+  await fetch('/api/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'stop' }),
+  });
+  pollStatus();
+}
+
+// ── Load settings ─────────────────────────────────────────────────────────────
+async function loadSettings() {
+  const [s, vdevs] = await Promise.all([
+    fetch('/api/settings').then(r => r.json()),
+    fetch('/api/devices/video').then(r => r.json()),
+  ]);
+
+  // Video device dropdown
+  const vsel = document.getElementById('video-device');
+  vsel.innerHTML = vdevs.length
+    ? vdevs.map(d => `<option value="${d.path}" ${d.path === s.video_device ? 'selected' : ''}>${d.path}</option>`).join('')
+    : `<option value="${s.video_device}">${s.video_device}</option>`;
+
+  // Auto-stream mode
+  document.querySelectorAll('[name=auto_stream]').forEach(r => {
+    r.checked = r.value === s.auto_stream;
+  });
+  document.getElementById('sched-start').value = s.schedule_start || '08:00';
+  document.getElementById('sched-end').value   = s.schedule_end   || '22:00';
+  toggleSchedule(s.auto_stream);
+
+  // Quality
+  const resEl = document.getElementById('resolution');
+  if ([...resEl.options].some(o => o.value === s.stream_resolution)) resEl.value = s.stream_resolution;
+  const fpsEl = document.getElementById('fps');
+  if ([...fpsEl.options].some(o => o.value == s.stream_fps)) fpsEl.value = s.stream_fps;
+  document.getElementById('bitrate').value    = s.stream_bitrate_kbps;
+  document.getElementById('bark-quiet').value = s.bark_quiet_seconds;
+}
+
+// Schedule visibility toggle
+document.querySelectorAll('[name=auto_stream]').forEach(r => {
+  r.addEventListener('change', () => toggleSchedule(r.value));
+});
+function toggleSchedule(val) {
+  document.getElementById('schedule-row').style.display = val === 'scheduled' ? 'flex' : 'none';
+}
+
+// ── Key visibility toggle ─────────────────────────────────────────────────────
+function toggleKey() {
+  const inp = document.getElementById('stream-key');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+// ── Save helpers ──────────────────────────────────────────────────────────────
+async function save(msgId, payload) {
+  const msg = document.getElementById(msgId);
+  try {
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    msg.style.color = 'var(--green)';
+    msg.textContent = '✓ Saved';
+    setTimeout(() => { msg.textContent = ''; }, 3000);
+  } catch(e) {
+    msg.style.color = '#f87171';
+    msg.textContent = 'Save failed: ' + e.message;
+  }
+}
+
+async function saveCredentials() {
+  const key    = document.getElementById('stream-key').value.trim();
+  const vdev   = document.getElementById('video-device').value;
+  const patch  = { video_device: vdev };
+  if (key) patch.stream_key = key;
+  await save('cred-msg', patch);
+  pollStatus();
+}
+
+async function saveAutoStream() {
+  const mode  = document.querySelector('[name=auto_stream]:checked')?.value || 'off';
+  const start = document.getElementById('sched-start').value;
+  const end   = document.getElementById('sched-end').value;
+  await save('auto-msg', { auto_stream: mode, schedule_start: start, schedule_end: end });
+}
+
+async function saveQuality() {
+  await save('quality-msg', {
+    stream_resolution:  document.getElementById('resolution').value,
+    stream_fps:         parseInt(document.getElementById('fps').value),
+    stream_bitrate_kbps: parseInt(document.getElementById('bitrate').value),
+    bark_quiet_seconds: parseInt(document.getElementById('bark-quiet').value),
+  });
+}
+
+
+// ── Upload mode toggle ────────────────────────────────────────────────────────
+function setUploadModeUI(mode) {
+  document.getElementById('up-s3-fields').style.display   = mode === 's3'   ? '' : 'none';
+  document.getElementById('up-sftp-fields').style.display = mode === 'sftp' ? '' : 'none';
+  document.getElementById('up-off-msg').style.display     = mode === 'off'  ? '' : 'none';
+  document.querySelectorAll('[name=upload_mode]').forEach(r => { r.checked = r.value === mode; });
+}
+document.querySelectorAll('[name=upload_mode]').forEach(r => {
+  r.addEventListener('change', () => setUploadModeUI(r.value));
+});
+
+// ── Upload status poll ────────────────────────────────────────────────────────
+async function pollUpload() {
+  try {
+    const u = await fetch('/api/upload').then(r => r.json());
+    document.getElementById('up-mode').textContent = u.mode.toUpperCase();
+    document.getElementById('up-ok').textContent   = u.uploaded;
+    document.getElementById('up-q').textContent    = `${u.queue_depth} / ${u.failed}`;
+  } catch(_) {}
+}
+
+async function saveUploadMode() {
+  const mode = document.querySelector('[name=upload_mode]:checked')?.value || 'off';
+  await save('upmode-msg', { upload_mode: mode });
+  setUploadModeUI(mode);
+}
+
+async function saveS3() {
+  const secret = document.getElementById('s3-secret').value.trim();
+  const patch = {
+    upload_s3_endpoint: document.getElementById('s3-endpoint').value.trim(),
+    upload_s3_bucket:   document.getElementById('s3-bucket').value.trim(),
+    upload_s3_prefix:   document.getElementById('s3-prefix').value.trim(),
+    upload_s3_key:      document.getElementById('s3-key').value.trim(),
+  };
+  if (secret) patch.upload_s3_secret = secret;
+  await save('s3-msg', patch);
+  document.getElementById('s3-secret').value = '';
+}
+
+async function saveSFTP() {
+  const pwd = document.getElementById('sftp-pwd').value.trim();
+  const patch = {
+    upload_sftp_host:     document.getElementById('sftp-host').value.trim(),
+    upload_sftp_port:     parseInt(document.getElementById('sftp-port').value),
+    upload_sftp_user:     document.getElementById('sftp-user').value.trim(),
+    upload_sftp_key_path: document.getElementById('sftp-keypath').value.trim(),
+    upload_sftp_dir:      document.getElementById('sftp-dir').value.trim(),
+  };
+  if (pwd) patch.upload_sftp_password = pwd;
+  await save('sftp-msg', patch);
+  document.getElementById('sftp-pwd').value = '';
+}
+
+function togglePwd(id) {
+  const el = document.getElementById(id);
+  el.type = el.type === 'password' ? 'text' : 'password';
+}
+
+// ── Extended loadSettings: populate upload fields ─────────────────────────────
+const _origLoadSettings = loadSettings;
+loadSettings = async function() {
+  await _origLoadSettings();
+  const s = await fetch('/api/settings').then(r => r.json());
+  setUploadModeUI(s.upload_mode || 'off');
+  document.getElementById('s3-endpoint').value = s.upload_s3_endpoint || '';
+  document.getElementById('s3-bucket').value   = s.upload_s3_bucket   || '';
+  document.getElementById('s3-prefix').value   = s.upload_s3_prefix   || 'woofalytics/';
+  document.getElementById('s3-key').value       = s.upload_s3_key      || '';
+  document.getElementById('sftp-host').value    = s.upload_sftp_host   || '';
+  document.getElementById('sftp-port').value    = s.upload_sftp_port   || 22;
+  document.getElementById('sftp-user').value    = s.upload_sftp_user   || '';
+  document.getElementById('sftp-keypath').value = s.upload_sftp_key_path || '';
+  document.getElementById('sftp-dir').value     = s.upload_sftp_dir    || '/upload/woofalytics';
+};
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+pollStatus();
+pollUpload();
+loadSettings();
+setInterval(pollStatus, 3000);
+setInterval(pollUpload, 5000);
+</script>
+</body>
+</html>

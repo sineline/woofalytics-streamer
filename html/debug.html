@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Woofalytics — Debug</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #07080f; --surface: #0f1120; --s2: #161828;
+      --border: rgba(255,255,255,0.07); --amber: #f59e0b;
+      --green: #22c55e; --red: #ef4444; --blue: #3b82f6;
+      --text: #e2e8f0; --muted: #64748b; --r: 14px;
+      --mono: 'JetBrains Mono', monospace;
+    }
+    body { font-family:'Outfit',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; padding:24px; }
+    nav a { color:var(--muted); text-decoration:none; font-size:0.85rem; padding:5px 13px; border-radius:8px; border:1px solid var(--border); transition:all .2s; white-space:nowrap; }
+    nav a:hover, nav a.active { color:var(--amber); border-color:var(--amber); }
+    nav h1 { font-size:1.4rem; font-weight:700; margin-right:auto; }
+    nav h1 span { color:var(--amber); }
+
+    /* Status bar */
+    .status-bar { display:flex; flex-wrap:wrap; gap:12px; margin-bottom:20px; }
+    .pill {
+      display:flex; align-items:center; gap:8px;
+      background:var(--surface); border:1px solid var(--border);
+      border-radius:99px; padding:6px 16px; font-size:0.83rem; font-weight:500;
+    }
+    .dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+    .ok  { background:var(--green); box-shadow:0 0 6px var(--green); }
+    .err { background:var(--red);   box-shadow:0 0 6px var(--red);   }
+    .off { background:var(--muted); }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .blink { animation:blink 1.4s infinite; }
+
+    /* Grid */
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    @media(max-width:860px){ .grid{grid-template-columns:1fr;} }
+    .span2 { grid-column:span 2; }
+    @media(max-width:860px){ .span2{grid-column:span 1;} }
+
+    /* Cards */
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:20px 22px; }
+    .card-title { font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:14px; }
+
+    /* KV table */
+    .kv { width:100%; border-collapse:collapse; font-size:.87rem; }
+    .kv td { padding:6px 0; vertical-align:top; }
+    .kv td:first-child { color:var(--muted); width:52%; padding-right:12px; }
+    .kv td:last-child  { font-family:var(--mono); font-size:.82rem; color:var(--text); word-break:break-all; }
+    .kv tr { border-bottom:1px solid var(--border); }
+    .kv tr:last-child { border-bottom:none; }
+
+    /* VU meter */
+    .vu-wrap { margin:10px 0 4px; }
+    .vu-label { display:flex; justify-content:space-between; font-size:.75rem; color:var(--muted); margin-bottom:4px; }
+    .vu-track { height:10px; background:var(--s2); border-radius:99px; overflow:hidden; position:relative; }
+    .vu-bar   { height:100%; border-radius:99px; transition:width .25s ease; background:linear-gradient(90deg,var(--green),var(--amber),var(--red)); }
+
+    /* Devices table */
+    .dev-table { width:100%; border-collapse:collapse; font-size:.84rem; }
+    .dev-table th { text-align:left; padding:7px 10px; color:var(--muted); font-weight:500; border-bottom:1px solid var(--border); font-size:.72rem; letter-spacing:.05em; }
+    .dev-table td { padding:8px 10px; border-bottom:1px solid var(--border); font-family:var(--mono); font-size:.8rem; }
+    .dev-table tr:last-child td { border-bottom:none; }
+    .selected-row td { background:rgba(245,158,11,.07); }
+    .sel-badge { background:#78450a; color:var(--amber); font-size:.7rem; padding:1px 7px; border-radius:99px; font-family:'Outfit',sans-serif; }
+
+    /* Log tail */
+    .log-box { background:var(--s2); border-radius:10px; padding:14px; font-family:var(--mono); font-size:.76rem; line-height:1.7; max-height:280px; overflow-y:auto; color:#94a3b8; }
+    .log-box .ts { color:var(--muted); }
+    .log-box .bark { color:var(--amber); font-weight:500; }
+
+    /* DOA compass */
+    #doa-mini { display:block; margin:0 auto; }
+
+    .refresh-note { font-size:.72rem; color:var(--muted); text-align:right; margin-top:6px; }
+  </style>
+</head>
+<body>
+
+<script src="/nav.js"></script>
+
+<!-- Status pills -->
+<div class="status-bar">
+  <div class="pill"><div class="dot off blink" id="dot-rec"></div><span id="lbl-rec">Recording: —</span></div>
+  <div class="pill"><div class="dot off" id="dot-stream"></div><span id="lbl-stream">Streamer: —</span></div>
+  <div class="pill"><div class="dot off" id="dot-gpu"></div><span id="lbl-gpu">GPU: —</span></div>
+  <div class="pill"><div class="dot ok blink" id="dot-live"></div><span id="lbl-uptime">Uptime: —</span></div>
+</div>
+
+<div class="grid">
+
+  <!-- Audio device -->
+  <div class="card">
+    <div class="card-title">Active Audio Device</div>
+    <table class="kv" id="device-kv"></table>
+    <div class="vu-wrap">
+      <div class="vu-label"><span>Live Input Level</span><span id="vu-val">— dBFS</span></div>
+      <div class="vu-track"><div class="vu-bar" id="vu-bar" style="width:0%"></div></div>
+    </div>
+  </div>
+
+  <!-- Last inference -->
+  <div class="card">
+    <div class="card-title">Last Inference</div>
+    <table class="kv" id="infer-kv"></table>
+    <div style="margin-top:14px">
+      <div class="card-title" style="margin-bottom:8px">DOA — Last Window</div>
+      <canvas id="doa-mini" width="280" height="120"></canvas>
+    </div>
+  </div>
+
+  <!-- Model info -->
+  <div class="card">
+    <div class="card-title">Model</div>
+    <table class="kv" id="model-kv"></table>
+  </div>
+
+  <!-- System / GPU -->
+  <div class="card">
+    <div class="card-title">System & GPU</div>
+    <table class="kv" id="sys-kv"></table>
+  </div>
+
+  <!-- All audio devices -->
+  <div class="card span2">
+    <div class="card-title">All Input Devices Visible in Container</div>
+    <div style="overflow-x:auto">
+      <table class="dev-table">
+        <thead><tr><th>Idx</th><th>Name</th><th>Channels</th><th>Default Rate</th><th></th></tr></thead>
+        <tbody id="devices-body"><tr><td colspan="5" style="color:var(--muted);padding:12px 10px">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Bark log tail -->
+  <div class="card span2">
+    <div class="card-title">Bark Log — last 40 events</div>
+    <div class="log-box" id="log-box">Loading...</div>
+    <div class="refresh-note">Auto-refreshes every 5 s</div>
+  </div>
+
+</div>
+
+<script>
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function kv(tableId, rows) {
+  const t = document.getElementById(tableId);
+  t.innerHTML = rows.map(([k, v]) =>
+    `<tr><td>${k}</td><td>${v ?? '—'}</td></tr>`
+  ).join('');
+}
+
+function setDot(id, lblId, ok, label) {
+  const d = document.getElementById(id);
+  d.className = 'dot ' + (ok ? 'ok blink' : 'err');
+  document.getElementById(lblId).textContent = label;
+}
+
+function fmtUptime(s) {
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = s%60;
+  return `${h}h ${m}m ${ss}s`;
+}
+
+// ── DOA mini compass ─────────────────────────────────────────────────────────
+function drawDOAmini(doa1, doa2, doa3) {
+  const canvas = document.getElementById('doa-mini');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const cx = W/2, cy = H - 14;
+  const R = Math.min(W/2, H) - 18;
+  ctx.clearRect(0,0,W,H);
+
+  // Arc + grid
+  ctx.beginPath(); ctx.arc(cx,cy,R,Math.PI,0);
+  ctx.strokeStyle='rgba(255,255,255,0.08)'; ctx.lineWidth=1; ctx.stroke();
+  [30,60,90,120,150].forEach(deg => {
+    const rad=(deg*Math.PI/180)+Math.PI;
+    ctx.beginPath(); ctx.moveTo(cx,cy);
+    ctx.lineTo(cx+R*Math.cos(rad), cy+R*Math.sin(rad));
+    ctx.strokeStyle='rgba(255,255,255,0.05)'; ctx.lineWidth=1; ctx.stroke();
+    ctx.fillStyle='#475569'; ctx.font='9px Outfit'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(deg+'°', cx+(R+10)*Math.cos(rad), cy+(R+10)*Math.sin(rad));
+  });
+
+  // Mic dot
+  ctx.beginPath(); ctx.arc(cx,cy,5,0,Math.PI*2);
+  ctx.fillStyle='#f59e0b'; ctx.fill();
+
+  // DOA markers
+  [[doa1,'#f59e0b','B'],[doa2,'#3b82f6','C'],[doa3,'#22c55e','M']].forEach(([deg,color,label]) => {
+    const rad=(deg*Math.PI/180)+Math.PI;
+    const x=cx+(R*0.7)*Math.cos(rad), y=cy+(R*0.7)*Math.sin(rad);
+    ctx.beginPath(); ctx.arc(x,y,9,0,Math.PI*2);
+    ctx.fillStyle=color+'bb'; ctx.fill();
+    ctx.fillStyle='#fff'; ctx.font='bold 8px Outfit'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(label,x,y);
+  });
+}
+
+// ── VU meter ─────────────────────────────────────────────────────────────────
+function updateVU(peak_dbfs) {
+  // Map -60..0 dBFS → 0..100%
+  const pct = Math.max(0, Math.min(100, ((peak_dbfs + 60) / 60) * 100));
+  document.getElementById('vu-bar').style.width = pct + '%';
+  document.getElementById('vu-val').textContent = peak_dbfs.toFixed(1) + ' dBFS';
+}
+
+// ── Devices table ─────────────────────────────────────────────────────────────
+async function loadDevices() {
+  const r = await fetch('/api/devices');
+  const devs = await r.json();
+  const body = document.getElementById('devices-body');
+  body.innerHTML = devs.length ? devs.map(d => `
+    <tr class="${d.is_selected ? 'selected-row' : ''}">
+      <td>${d.index}</td>
+      <td>${d.name}</td>
+      <td>${d.max_input_channels}</td>
+      <td>${d.default_sample_rate} Hz</td>
+      <td>${d.is_selected ? '<span class="sel-badge">ACTIVE</span>' : ''}</td>
+    </tr>`).join('') : '<tr><td colspan="5" style="color:var(--muted);padding:12px 10px">No input devices found</td></tr>';
+}
+
+// ── Log tail ──────────────────────────────────────────────────────────────────
+async function loadLog() {
+  const r = await fetch('/api/log?lines=40');
+  const { lines } = await r.json();
+  const box = document.getElementById('log-box');
+  if (!lines.length) { box.textContent = 'No bark events recorded yet.'; return; }
+  box.innerHTML = lines.map(l => {
+    const isBark = l.includes('BARKING');
+    return `<div class="${isBark ? 'bark' : ''}">${l.replace(/\n/,'')}</div>`;
+  }).join('');
+  box.scrollTop = box.scrollHeight;
+}
+
+// ── Main debug poll ───────────────────────────────────────────────────────────
+async function pollDebug() {
+  try {
+    const r = await fetch('/api/debug');
+    const d = await r.json();
+
+    // Status pills
+    setDot('dot-rec', 'lbl-rec', d.threads.recording_alive, 'Recording: ' + (d.threads.recording_alive ? 'Running' : 'STOPPED'));
+    setDot('dot-stream', 'lbl-stream', d.threads.streamer_running, 'Streamer: ' + (d.threads.streamer_running ? 'Live' : 'Off'));
+    setDot('dot-gpu', 'lbl-gpu', d.gpu.available, 'GPU: ' + (d.gpu.available ? (d.gpu.name || 'Available') : 'CPU only'));
+    document.getElementById('lbl-uptime').textContent = 'Uptime: ' + fmtUptime(d.system.uptime_seconds);
+
+    // Device card
+    kv('device-kv', [
+      ['Index',       d.device.index],
+      ['Name',        d.device.name],
+      ['Channels',    d.device.channels],
+      ['Sample rate', d.device.sample_rate + ' Hz'],
+      ['Chunk size',  d.device.chunk_samples + ' samples'],
+      ['Buffer latency', d.device.latency_ms + ' ms'],
+    ]);
+    updateVU(d.audio_level.peak_dbfs);
+
+    // Inference card
+    const probs = d.last_pred.bark_probability || [];
+    const lastProb = probs.length ? Math.max(...probs) : 0;
+    kv('infer-kv', [
+      ['Bark probability', (lastProb*100).toFixed(1) + '%'],
+      ['DOA Bartlett',     d.last_doa.doa1 + '°'],
+      ['DOA Capon',        d.last_doa.doa2 + '°'],
+      ['DOA MEM',          d.last_doa.doa3 + '°'],
+      ['Last seen',        d.last_pred.datetime ? new Date(d.last_pred.datetime).toLocaleTimeString() : '—'],
+      ['Avg dBFS',         d.audio_level.avg_dbfs + ' dBFS'],
+    ]);
+    drawDOAmini(d.last_doa.doa1, d.last_doa.doa2, d.last_doa.doa3);
+
+    // Model card
+    kv('model-kv', [
+      ['File',          d.model.path],
+      ['Window',        d.model.window_ms + ' ms'],
+      ['Overlap',       d.model.overlap_ms + ' ms'],
+      ['Model rate',    d.model.sample_rate + ' Hz'],
+      ['Threshold',     (d.model.threshold*100).toFixed(0) + '%'],
+    ]);
+
+    // System card
+    kv('sys-kv', [
+      ['Python',       d.system.python],
+      ['PyTorch',      d.system.torch],
+      ['CUDA',         d.gpu.available ? 'Available' : 'Not available'],
+      ['GPU',          d.gpu.name || '—'],
+      ['VRAM total',   d.gpu.memory_total_mb ? d.gpu.memory_total_mb + ' MB' : '—'],
+      ['VRAM used',    d.gpu.memory_used_mb  ? d.gpu.memory_used_mb  + ' MB' : '—'],
+    ]);
+  } catch(e) { console.error(e); }
+}
+
+// Kick off
+pollDebug();
+loadDevices();
+loadLog();
+setInterval(pollDebug, 2000);
+setInterval(loadLog,   5000);
+// Devices rarely change — load once then every 30s
+setInterval(loadDevices, 30000);
+</script>
+</body>
+</html>

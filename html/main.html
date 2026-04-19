@@ -1,115 +1,318 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Real-Time Data Visualization</title>
-    <!-- Include Chart.js library -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        /* Add mobile-friendly styles here */
-        body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 0;
-            background-color: #f2f2f2;
-        }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Woofalytics — Dog Bark Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-        #chart {
-            max-width: 100%;
-            margin: 10px;
-        }
-    </style>
+    :root {
+      --bg:        #07080f;
+      --surface:   #0f1120;
+      --surface2:  #161828;
+      --border:    rgba(255,255,255,0.07);
+      --amber:     #f59e0b;
+      --amber-dim: #78450a;
+      --red:       #ef4444;
+      --green:     #22c55e;
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --radius:    16px;
+    }
+
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+
+
+    /* ── Grid ── */
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+    .span2 { grid-column: span 2; }
+    @media (max-width: 900px) { .span2 { grid-column: span 1; } }
+
+    /* ── Card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      transition: border-color 0.3s;
+    }
+    .card.alert { border-color: var(--amber); box-shadow: 0 0 24px rgba(245,158,11,0.12); }
+    .card-title {
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 16px;
+    }
+
+    /* ── Probability meter ── */
+    .prob-value {
+      font-size: 3.5rem;
+      font-weight: 700;
+      line-height: 1;
+      color: var(--amber);
+      transition: color 0.3s;
+    }
+    .prob-value.safe { color: var(--green); }
+    .prob-bar-wrap {
+      margin-top: 14px;
+      height: 8px;
+      background: var(--surface2);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .prob-bar {
+      height: 100%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, var(--green), var(--amber), var(--red));
+      transition: width 0.4s ease;
+    }
+
+    /* ── Chart ── */
+    .chart-wrap { position: relative; height: 180px; }
+
+    /* ── Events table ── */
+    .events-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    .events-table th {
+      text-align: left;
+      padding: 8px 12px;
+      color: var(--muted);
+      font-weight: 500;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.78rem;
+      letter-spacing: 0.05em;
+    }
+    .events-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    .events-table tr:last-child td { border-bottom: none; }
+    .events-table tr { transition: background 0.15s; }
+    .events-table tr:hover td { background: var(--surface2); }
+    .badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 99px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background: var(--amber-dim);
+      color: var(--amber);
+    }
+    audio { width: 160px; height: 28px; accent-color: var(--amber); }
+    .no-data { color: var(--muted); font-size: 0.88rem; padding: 16px 0; text-align: center; }
+
+    /* ── Dog stats cards ── */
+    .dogs-grid { display: flex; flex-wrap: wrap; gap: 12px; }
+    .dog-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 18px;
+      min-width: 160px;
+      flex: 1;
+    }
+    .dog-card .name { font-weight: 600; font-size: 1rem; margin-bottom: 6px; }
+    .dog-card .stat { font-size: 0.82rem; color: var(--muted); margin-top: 3px; }
+    .dog-card .stat strong { color: var(--text); }
+  </style>
 </head>
 <body>
-    <div>
-        <canvas id="chart" width="800" height="400"></canvas>
+
+
+<div class="grid">
+
+  <!-- Live probability -->
+  <div class="card" id="prob-card">
+    <div class="card-title">Bark Probability</div>
+    <div class="prob-value safe" id="prob-num">0%</div>
+    <div class="prob-bar-wrap"><div class="prob-bar" id="prob-bar" style="width:0%"></div></div>
+  </div>
+
+  <!-- Dog stats summary -->
+  <div class="card" id="dogs-card">
+    <div class="card-title">Dogs Identified</div>
+    <div class="dogs-grid" id="dogs-grid">
+      <div class="no-data">No bark events yet</div>
     </div>
-    <script>
-        // Get a reference to the chart canvas element
-        const ctx = document.getElementById('chart').getContext('2d');
+  </div>
 
-        // Initialize the Chart.js chart
-        const chart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: [],  // Time labels
-                datasets: [{
-                    label: 'Percentage Value',
-                    data: [],  // Percentage values
-                    borderColor: 'blue',
-                    borderWidth: 2,
-                    fill: false,
-                }],
-            },
-            options: {
-                scales: {
-                    x: [{
-                        type: 'realtime',  // Enable real-time scaling on the x-axis
-                        realtime: {
-                            duration: 10000,  // Display data for the last 10 seconds
-                            refresh: 1000,   // Refresh data every 1 second
-                            delay: 1000,     // Delay initial data display for 1 second
-                        },
-                    }],
-                    y: {
-                        min: 0,
-                        max: 100,
-                    },
-                },
-                // Add horizontal line at y=80
-                annotation: {
-                    annotations: [{
-                        type: 'line',
-                        mode: 'horizontal',
-                        scaleID: 'y-axis-0',
-                        value: 80,
-                        borderColor: 'red',
-                        borderWidth: 2,
-                    }],
-                },
-                // Add horizontal line at y=80 using afterDraw hook
-                plugins: {
-                    afterDraw: (chart) => {
-                        const ctx = chart.ctx;
-                        const yValue = chart.scales.y.getPixelForValue(90);
-                        ctx.strokeStyle = 'red';
-                        ctx.lineWidth = 2;
-                        ctx.beginPath();
-                        ctx.moveTo(chart.chartArea.left, yValue);
-                        ctx.lineTo(chart.chartArea.right, yValue);
-                        ctx.stroke();
-                    },
-                },
-            },
-        });
+  <!-- Chart -->
+  <div class="card span2">
+    <div class="card-title">Bark Probability — Live</div>
+    <div class="chart-wrap">
+      <canvas id="chart"></canvas>
+    </div>
+  </div>
 
-        // Function to fetch data from the endpoint
-        async function fetchData() {
-            try {
-                const response = await fetch('http://127.0.0.1:8000/api/bark');
-                const data = await response.json();
-                
-                // Add the new data point to the chart
-                const timeNow = new Date();
-                chart.data.labels.push(timeNow.toISOString());
-                chart.data.datasets[0].data.push(data.bark_probability * 100.0);
+  <!-- Event log -->
+  <div class="card span2">
+    <div class="card-title">Recent Bark Events</div>
+    <div style="overflow-x:auto">
+      <table class="events-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Dog</th>
+            <th>Probability</th>
+            <th>Peak (dBFS)</th>
+            <th>Clip</th>
+          </tr>
+        </thead>
+        <tbody id="events-body">
+          <tr><td colspan="5" class="no-data">Waiting for bark events...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
 
-                // Remove old data points to keep the chart's data within the defined duration
-                if (chart.data.labels.length > 10) {
-                    chart.data.labels.shift();
-                    chart.data.datasets[0].data.shift();
-                }
+</div>
 
-                // Update the chart
-                chart.update();
-            } catch (error) {
-                console.error('Error fetching data:', error);
-            }
+<script src="/nav.js"></script>
+<script>
+  // ── Chart setup ──────────────────────────────────────────────────────────
+  const ctx = document.getElementById('chart').getContext('2d');
+  const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label: 'Bark %',
+        data: [],
+        borderColor: '#f59e0b',
+        borderWidth: 2,
+        backgroundColor: 'rgba(245,158,11,0.08)',
+        fill: true,
+        tension: 0.4,
+        pointRadius: 0,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 300 },
+      scales: {
+        x: { display: false },
+        y: {
+          min: 0, max: 100,
+          grid: { color: 'rgba(255,255,255,0.05)' },
+          ticks: { color: '#64748b', callback: v => v + '%' }
         }
+      },
+      plugins: { legend: { display: false } }
+    }
+  });
 
-        // Fetch data every second
-        setInterval(fetchData, 2000);
-    </script>
+  // ── Live bark polling ─────────────────────────────────────────────────────
+  const MAX_POINTS = 60;
+  const probNum    = document.getElementById('prob-num');
+  const probBar    = document.getElementById('prob-bar');
+  const probCard   = document.getElementById('prob-card');
+
+  async function pollBark() {
+    try {
+      const r = await fetch('/api/bark');
+      const d = await r.json();
+      const pct = Math.round((d.bark_probability || 0) * 100);
+      const barking = pct >= 88;
+
+      probNum.textContent = pct + '%';
+      probNum.className   = 'prob-value' + (barking ? '' : ' safe');
+      probBar.style.width = pct + '%';
+      probCard.className  = 'card' + (barking ? ' alert' : '');
+
+      const label = new Date().toLocaleTimeString();
+      chart.data.labels.push(label);
+      chart.data.datasets[0].data.push(pct);
+      if (chart.data.labels.length > MAX_POINTS) {
+        chart.data.labels.shift();
+        chart.data.datasets[0].data.shift();
+      }
+      chart.update();
+    } catch (e) { /* ignore */ }
+  }
+
+  // ── Events table ──────────────────────────────────────────────────────────
+  let lastEventId = null;
+
+  function fmtTime(ts) {
+    try { return new Date(ts).toLocaleString(); } catch { return ts; }
+  }
+
+  function buildRow(ev) {
+    const tr  = document.createElement('tr');
+    const clip = ev.clip_path ? ev.clip_path.replace('./clips/', '') : null;
+    tr.innerHTML = `
+      <td>${fmtTime(ev.timestamp)}</td>
+      <td><span class="badge">${ev.dog_id || 'Unknown'}</span></td>
+      <td>${((ev.bark_prob||0)*100).toFixed(0)}%</td>
+      <td>${ev.peak_dbfs != null ? ev.peak_dbfs.toFixed(1) : '—'}</td>
+      <td>${clip ? `<audio controls src="/clips/${clip}"></audio>` : '—'}</td>
+    `;
+    return tr;
+  }
+
+  async function pollEvents() {
+    try {
+      const r = await fetch('/api/events?limit=20');
+      const events = await r.json();
+      if (!events.length) return;
+      if (events[0].id === lastEventId) return;
+      lastEventId = events[0].id;
+
+      const body = document.getElementById('events-body');
+      body.innerHTML = '';
+      events.forEach(ev => body.appendChild(buildRow(ev)));
+    } catch (e) { /* ignore */ }
+  }
+
+  // ── Dog stats ─────────────────────────────────────────────────────────────
+  async function pollDogs() {
+    try {
+      const r = await fetch('/api/dogs');
+      const dogs = await r.json();
+      if (!dogs.length) return;
+      const grid = document.getElementById('dogs-grid');
+      grid.innerHTML = '';
+      dogs.forEach(d => {
+        const el = document.createElement('div');
+        el.className = 'dog-card';
+        el.innerHTML = `
+          <div class="name">🐕 ${d.dog_id}</div>
+          <div class="stat">Barks: <strong>${d.bark_count}</strong></div>
+          <div class="stat">Avg prob: <strong>${((d.avg_prob||0)*100).toFixed(0)}%</strong></div>
+          <div class="stat">Peak: <strong>${d.avg_peak_dbfs != null ? d.avg_peak_dbfs.toFixed(1)+'dBFS' : '—'}</strong></div>
+          <div class="stat">Last: <strong>${fmtTime(d.last_seen)}</strong></div>
+        `;
+        grid.appendChild(el);
+      });
+    } catch (e) { /* ignore */ }
+  }
+
+  // ── Kick off polling ──────────────────────────────────────────────────────
+  pollBark();
+  pollEvents();
+  pollDogs();
+  setInterval(pollBark,   2000);
+  setInterval(pollEvents, 5000);
+  setInterval(pollDogs,  15000);
+</script>
 </body>
 </html>
