@@ -170,9 +170,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/settings":
             # Save to persistent settings file; apply runtime-safe ones immediately
             updated = cfg_store.update(data)
-            # Apply bark_quiet_seconds immediately if changed
-            if "auto_stream" in data:
-                pass  # schedule handled by stream page
+            if "video_device" in data:
+                _mjpeg.set_device(data["video_device"])   # hot-swap camera
             self._send_json(cfg_store.get_public())
         elif parsed.path == "/api/train":
             clips  = data.get("clips", [])   # [{path, label}, ...]

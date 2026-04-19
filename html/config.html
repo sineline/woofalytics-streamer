@@ -169,6 +169,23 @@
     <div class="section-save-msg" id="mic-msg"></div>
   </div>
 
+  <!-- Camera device selector (own card) -->
+  <div class="card">
+    <div class="card-title">📷 Camera Device</div>
+    <div class="field">
+      <label>Video Device</label>
+      <select id="vid-device-sel"></select>
+      <div class="field-hint">Lists all <code>/dev/video*</code> devices visible in the container. The PS Eye is usually <strong>/dev/video2</strong>. Changes apply instantly to the live preview.</div>
+    </div>
+    <!-- Inline preview so you can confirm the right device -->
+    <div style="margin-top:12px;border-radius:10px;overflow:hidden;aspect-ratio:4/3;background:#000;border:1px solid var(--border)">
+      <img id="cfg-cam-preview" src="/video_feed" style="width:100%;height:100%;object-fit:cover"
+           onerror="this.style.opacity='.3'" alt="camera preview">
+    </div>
+    <button class="btn-save" onclick="saveCam()" style="margin-top:12px">Save Camera</button>
+    <div class="section-save-msg" id="cam-msg"></div>
+  </div>
+
   <!-- Stream credentials (shortcut — full control at /stream) -->
   <div class="card">
     <div class="card-title">📺 YouTube Stream Key</div>
@@ -179,10 +196,6 @@
         <button class="eye-btn" onclick="toggleKey()">👁</button>
       </div>
       <div class="field-hint">From <a href="https://studio.youtube.com" target="_blank" style="color:var(--amber)">studio.youtube.com</a> → Go Live → Stream key. Stored in Docker volume, not in env.</div>
-    </div>
-    <div class="field">
-      <label>Video Device</label>
-      <select id="vid-device-sel"></select>
     </div>
     <button class="btn-save" onclick="saveStream()">Save Stream Settings</button>
     <div class="section-save-msg" id="stream-msg"></div>
@@ -364,11 +377,25 @@ async function saveMic() {
   }, 'mic-msg');
 }
 
+async function saveCam() {
+  const vdev = document.getElementById('vid-device-sel').value;
+  const updated = await saveTo('/api/settings', { video_device: vdev }, 'cam-msg');
+  if (updated) {
+    currentSettings = updated;
+    // Reload the preview img so it reconnects to the new device
+    const img = document.getElementById('cfg-cam-preview');
+    if (img) { img.src = '/video_feed?' + Date.now(); }
+  }
+}
+
 async function saveStream() {
-  const key   = document.getElementById('yt-key').value.trim();
-  const vdev  = document.getElementById('vid-device-sel').value;
-  const patch = { video_device: vdev };
+  const key = document.getElementById('yt-key').value.trim();
+  const patch = {};
   if (key) patch.stream_key = key;
+  if (Object.keys(patch).length === 0) {
+    showMsg('stream-msg', 'Nothing to save.', false);
+    return;
+  }
   const updated = await saveTo('/api/settings', patch, 'stream-msg');
   if (updated) { currentSettings = updated; }
   // Clear key field for security
