@@ -1,81 +1,237 @@
-# woofalytics
-AI Powered Woof Analytics!
+# woofalytics-streamer
 
-This project utilises a Raspberry Pi and a microphone array to identify dog barks and direction of arrival. It includes a straightforward pre-trained model, but you also have the option to customise and train it to meet your specific needs.
+> **A community fork of [woofalytics](https://github.com/mdoulaty/woofalytics) by [@mdoulaty](https://github.com/mdoulaty).**
+> This fork was extended by an **agentic AI** ([Antigravity](https://deepmind.google/), built by Google DeepMind) working alongside the repository owner. The AI autonomously designed, implemented, debugged, and committed all additions described below.
 
-The primary motivation behind this project was to differentiate between our neighbor's dog's barking and our own dog's vocalisations. The issue I aimed to address was as follows: when our neighbor's dog barked, it triggered our dog to respond with barking, leading to an incessant cycle of noise. To disrupt this pattern, some dog trainers recommended providing our dog with treats when the neighbor's dog barked, diverting his attention to something more exciting (such as eating treats) instead of barking in response. To accomplish this, I developed this project and further automated it automatic treat dispensers (which are not included in this repo), and it has proven to be remarkably effective, almost like magic!
+---
 
-# Hardware Setup
-I deployed this solution on a Raspberry Pi 4 computer equipped with a dual-channel microphone array. The Raspberry Pi is running the 64-bit version of the Raspberry Pi OS. The microphone array utilised in this setup is manufactured by Andrea Electronics. It is a linear array of two microphones. For additional information about the microphone, please visit the [Andrea Electronics website](https://andreaelectronics.com/array-microphone/).
-A sample photo of the micrphone array:
-![PureAudio™ USB Array Microphone](https://andreaelectronics.com/wp-content/uploads/2020/09/Andrea-PureAudio-New-USB-Array-Microphone-1024x424-1.jpg)
+## What is Woofalytics?
 
-The reason for using this microphone array is that it doesn't require any driver installation on the Raspberry Pi 4 (I used 64-bit version of the Raspberry Pi OS).
+Woofalytics is an AI-powered dog bark detector originally built by [@mdoulaty](https://github.com/mdoulaty) to run on a Raspberry Pi with a dual-channel microphone array. It uses a compact feed-forward neural network to classify barks in real time, estimates the **direction of arrival (DOA)** of the sound, and exposes a live web dashboard.
 
-# Software Setup
+The original motivation: distinguish a neighbour's dog from one's own and use the trigger to auto-dispense treats — breaking the bark-response cycle. The model itself is a small two-hidden-layer network with a sigmoid output over 80-dimensional log-Mel filterbank features extracted from 60 ms windows. It is fast enough for real-time use on constrained hardware.
 
-First install a few packages for audio capture on the Pi OS:
+**Original hardware:** Raspberry Pi 4 + [Andrea Electronics PureAudio USB Array Microphone](https://andreaelectronics.com/array-microphone/) (2-channel linear array).
 
-```shell
-# This is tested on Raspberry Pi OS (Debian GNU/Linux 11 (bullseye) / aarch64)
-$ sudo apt update
-$ sudo apt install \
-    build-essential \
-    libportaudio2 \
-    libasound2-dev \
-    libusb-1.0-0-dev \
-    python3-pyaudio
+---
+
+## What this fork adds
+
+This fork keeps everything from the original and layers a production-ready monitoring and management stack on top, containerised with Docker.
+
+### 🐳 Containerisation
+- `Dockerfile`, `docker-compose.yml`, `.dockerignore` — runs the full stack in a single command
+- NVIDIA GPU support via the Container Toolkit (CPU fallback included)
+- `privileged: true` passthrough for full USB audio visibility inside the container (required for the PS Eye 4-mic array — ALSA card registration does not transfer through `/dev/snd` alone)
+- Persistent volume at `./clips/` for recorded audio and the SQLite database
+
+### 🎙️ Extended microphone support: Sony PlayStation Eye (PS Eye)
+The original code targeted a 2-channel Andrea array. This fork adds full support for the **PS Eye camera**, which exposes a **4-microphone ULA** (`bNrChannels=4` at 16 000 Hz per the USB audio descriptor).
+
+- DOA estimation upgraded to a 4-element ULA beamformer
+- `MIC_CHANNELS=4`, `MIC_SAMPLE_RATE=16000`, `MIC_ARRAY_SPACING` configurable at runtime without a rebuild
+
+### 📊 Analytics dashboard (`/analytics`)
+- Per-dog noise contribution charts (bark count, cumulative duration, peak dBFS)
+- Timeline heat-map of bark activity by hour
+- Filterable by dog identity and date range
+
+### 📼 Clip Library (`/library`)
+- Browse, play, retag, and delete stored WAV clips
+- Per-clip audio player, probability, peak dBFS, duration, DOA badge
+- Bulk select + delete
+- Dog reassignment dropdown
+- Search and sort (newest / oldest / loudest / longest)
+- Upload status badge per clip (queued / uploaded / failed)
+
+### 🗄️ Relational SQLite schema
+- New `dogs` table joined to `events`
+- **Auto-naming**: unidentified dogs are sequentially assigned "Dog 1", "Dog 2", … on first bark
+- CRUD API: create dog, rename dog, retag event, delete event + file
+
+### 📺 Stream page (`/stream`)
+- Go Live / Stop controls for YouTube RTMP (ffmpeg + `libx264`)
+- Auto-stream modes: manual / on-bark / always / scheduled (time window)
+- Encoding quality settings: resolution, fps, bitrate, OSD reset delay
+- Live stream status (duration, error display, key-set indicator)
+- Quick-links to YouTube Studio and Live Dashboard
+
+### ☁️ Archive upload — async clip backup
+An alternative to live streaming: automatically upload bark clips to cloud storage for long-term archiving and audit.
+
+| Backend | Details |
+|---|---|
+| **S3-compatible** | AWS S3, Backblaze B2, MinIO, Wasabi — just change the endpoint URL |
+| **SFTP** | Any SSH server; password or private key auth |
+
+- Non-blocking background queue with 3-attempt retry and exponential back-off
+- Upload status (`queued` / `uploaded` / `failed`) tracked per clip in the DB
+- Secrets (S3 secret, SFTP password, stream key) are **never returned to the browser**
+
+### ⚙️ Config page (`/config`)
+- **Mic device selector** — dropdown of all ALSA input devices, channels, sample rate, DOA array spacing
+- **Stream key input** — masked password field with show/hide toggle, saved to the Docker volume (not in env)
+- **Video device selector** — lists `/dev/video*` devices
+- **Runtime sliders** — bark threshold and auto-save cooldown apply instantly without a restart
+- **docker-compose.yml snippet generator** — copy-paste ready config for the current settings
+
+### 🐞 Debug page (`/debug`)
+- Real-time system stats (CPU, RAM, GPU if present)
+- Live VU meter per channel
+- DOA compass visualization
+- Active audio device health
+- Scrollable live log tail
+
+### 🧭 Shared navigation (`/nav.js`)
+- Single JS file injected on every page
+- Sticky glassmorphism bar with active-link detection
+- Live bark status pill (polling `/api/bark`)
+
+### 💾 Persistent settings
+`settings.py` writes a `./clips/settings.json` file that survives container restarts and takes precedence over `docker-compose.yml` env vars for runtime-configurable fields.
+
+---
+
+## Hardware
+
+| Component | Original | This fork |
+|---|---|---|
+| SBC | Raspberry Pi 4 | Any x86-64 Linux PC or ARM64 SBC (tested on Ubuntu) |
+| Microphone | Andrea PureAudio 2-ch USB array | **Sony PS Eye** (4-mic ULA, 16 kHz) |
+| GPU | — | Optional NVIDIA GPU for faster inference |
+
+> **Running on an Odroid N2+?** The stack runs natively on Ubuntu 22.04 for ARM64. Install PyTorch with `--index-url https://download.pytorch.org/whl/cpu`. No CUDA needed — the model is small enough for CPU-only inference. For streaming, use `h264_v4l2m2m` hardware encoding instead of `libx264` to keep CPU load low.
+
+---
+
+## Quick start (Docker)
+
+```bash
+git clone https://github.com/sineline/woofalytics-streamer.git
+cd woofalytics-streamer
+
+# (optional) set your YouTube stream key
+# edit docker-compose.yml → YOUTUBE_STREAM_KEY=xxxx
+
+docker compose up --build
 ```
 
-The code is based on Python. Continue installing the rest of the dependency packages:
-```shell
-$ pip install -r requirements.txt
+Open **http://localhost:8000**
+
+> **PS Eye users:** The `privileged: true` flag in `docker-compose.yml` is required for ALSA to see the 4-channel card inside the container. Also update the USB device path if your bus/device numbers differ (`lsusb` to check):
+> ```yaml
+> devices:
+>   - /dev/bus/usb/001/008:/dev/bus/usb/001/008  # adjust to your lsusb output
+> ```
+
+---
+
+## Native install (no Docker)
+
+```bash
+# System dependencies (Debian/Ubuntu)
+sudo apt install python3-pip python3-venv portaudio19-dev ffmpeg \
+                 v4l-utils libsndfile1 alsa-utils
+
+# Create venv
+python3 -m venv .venv && source .venv/bin/activate
+
+# PyTorch (CPU-only build — works on ARM64 and x86)
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# Everything else
+pip install -r requirements.txt
+
+python main.py
 ```
 
-And to run the main code, just run `main.py`:
-```shell
-$ python main.py
+---
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `MIC_DEVICE_HINT` | `USB Camera` | Substring matched against PyAudio device names |
+| `MIC_CHANNELS` | `4` | `2` for Andrea array, `4` for PS Eye |
+| `MIC_SAMPLE_RATE` | `16000` | Hz — PS Eye only supports 16000 |
+| `MIC_ARRAY_SPACING` | `0.1` | Inter-mic spacing as fraction of wavelength (λ) |
+| `AUTO_SAVE_COOLDOWN` | `30` | Seconds between auto-saved clips |
+| `YOUTUBE_STREAM_KEY` | _(empty)_ | Disables streaming if unset |
+| `VIDEO_DEVICE` | `/dev/video0` | V4L2 device for ffmpeg video capture |
+| `BARK_QUIET_SECONDS` | `10` | OSD reset delay after last bark |
+| `EVENTS_DB` | `./clips/events.db` | SQLite database path |
+
+All of these can also be set at runtime via the **Config page** and are persisted to `./clips/settings.json`.
+
+---
+
+## Web pages
+
+| Path | Description |
+|---|---|
+| `/` | Live dashboard — bark probability, VU meters, DOA compass |
+| `/analytics` | Per-dog noise analytics and timeline |
+| `/library` | Browse, play, tag, and delete recorded clips |
+| `/stream` | YouTube streaming controls + archive upload config |
+| `/debug` | System telemetry, live log, audio device health |
+| `/config` | Device selectors, stream key, runtime tuning |
+| `/rec` | Manual clip recording trigger |
+
+---
+
+## API
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/bark` | Current bark probability and timestamp |
+| GET | `/api/analytics` | Aggregated per-dog stats |
+| GET | `/api/events?limit=N&dog_id=X` | Recent bark events |
+| GET | `/api/dogs` | All dogs in the DB |
+| POST | `/api/dogs` | Create a new dog `{ "name": "Rex" }` |
+| PATCH | `/api/dogs/<id>` | Rename a dog `{ "name": "Buddy" }` |
+| DELETE | `/api/events/<id>` | Delete event + WAV file |
+| PATCH | `/api/events/<id>` | Retag event `{ "dog_id": "Dog 2" }` |
+| GET | `/api/stream` | Stream status |
+| POST | `/api/stream` | Start/stop stream `{ "action": "start" }` |
+| GET | `/api/upload` | Upload queue status |
+| GET/POST | `/api/settings` | Read / write persistent settings |
+| GET/POST | `/api/config` | Read / write runtime config (threshold, cooldown) |
+| GET | `/api/devices` | List PyAudio input devices |
+| GET | `/api/devices/video` | List `/dev/video*` devices |
+| GET | `/api/debug` | Live system telemetry |
+
+---
+
+## Model
+
+Unchanged from the original. A compact feed-forward network:
+
+```
+Input: 80-dim log-Mel filterbank (60 ms window, 8 kHz target SR after mixing down)
+→ FC(2400 → 128, ReLU)
+→ FC(128 → 64, ReLU)
+→ FC(64 → 1, Sigmoid)
+Output: P(barking)
 ```
 
-If all packages are installed and there are no other problems, you should see some messages like:
-```
-INFO:Main:Starting Woofalytics server, press Ctrl+C to stop...
-INFO:Woofalytics:Starting recording loop...
-DEBUG:Woofalytics:Clip past context seconds: 15, number of frames: 3000
-DEBUG:Woofalytics:Clip future context seconds: 15, number of frames: 3000
-Starting server on port 8000...
-INFO:Woofalytics:Window len #samples: 264, overlap #samples: 132
-[2023-10-03T22:46:37.611563, 090, 090, 090]: Not barking: 0.007565224077552557
-```
-the last line shows direction of arrival of the audio to the microphone array estimated using three different algorithms (hence three times `090`), followed by probability of barking, which in this case is almost zero. It should keep showing the bark probability in realtime:
+See the original [`notebooks/woofalytics-model.ipynb`](notebooks/woofalytics-model.ipynb) for training details.
 
-![main script](misc/main-script.gif)
+---
 
-## Web Interface
-If you want to see a visualisation of bark probabilities in real-time, you can navigate to `http://127.0.0.1:8000` and you should see a screen similar to this:
-![Bark Probability Visualisation](misc/home-page-bark-plot.gif)
+## IFTTT integration
 
-There are a few more endpoints, such as `/api/bark` which will return a JSON struct containing the bark probablity in realtime:
-```json
-{
-    "datetime": "2023-10-03T23:44:52.168245", 
-    "bark_probability": 0.0724762910977006
-}
-```
- This can be used for further automation. In case you would like this setup to be used for data collection (i.e. recording your own dog barks), you can navigate to `/rec` and will see a `Record` button that will store an audio clip from 30 seconds before the time you pressed the record button for another 30 seconds (you can configure all these values in the `record.py` file). This can later be used for training your own model if you want to distinguish different dog barks from each other. But be prepared to record and label at least tens of hours of data before getting anything useful! 
+Unchanged from the original. Set in `record.py`:
 
-## IFTTT Integration
-If you want to trigger some actions when a dog bark is detected, you can use the IFTTT integration. You just need to update `record.py` and set these two values:
 ```python
 IFTTT_EVENT_NAME = "woof"
 IFTTT_KEY = "YOUR_IFTTT_WEBHOOKS_KEY"
 ```
 
-it uses WebHooks and you can further automate actions using this trigger. Any smart device that works with IFTTT can be used, such as [Aqara Smart Pet Feeder C1](https://www.aqara.com/eu/product/smart-pet-feeder-c1/) which I initially used for my project. Sample notifications from IFTTT integration:
+---
 
-![IFTTT Notifications](misc/ifttt-notifications.jpg)
+## Credits
 
-# Re-training the Model
-Please refer to the `notebooks/woofalytics-model.ipynb` notebook for additional information. Everything should be fairly self-explanatory there, although it may appear a bit disorganised. I've also included some sample recordings to ensure that you can run the notebook without any issues.
+- **Original project:** [woofalytics](https://github.com/mdoulaty/woofalytics) by [@mdoulaty](https://github.com/mdoulaty) — bark detection model, DOA estimation, core recording loop, web server, IFTTT integration.
+- **This fork:** All additions (Docker, multi-page UI, relational DB, archive upload, stream controls, config/debug pages, PS Eye support) were designed and implemented by **[Antigravity](https://deepmind.google/)**, an agentic AI coding assistant built by the Google DeepMind team, working interactively with the repository owner [@sineline](https://github.com/sineline).
 
-At its core, the model is simple feed-forward neural network with 2 hidden layers and a sigmoid output emitting probability of barking for its input. The inputs are 80-dimensional log Mel filterbanks extracted from 60ms of audio. The network is small enough to work in realtime without consuming too much memory or power.
+> No original logic was removed or broken. All new features are additive.
