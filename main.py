@@ -2,12 +2,92 @@ import logging
 import json
 import os
 import signal
+import subprocess
+import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 import glob
 import settings as cfg_store
 from record import Woofalytics
 import trainer as _trainer_mod
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """HTTP server that handles each request in its own thread."""
+    daemon_threads = True
+
+
+# ── MJPEG camera streamer ─────────────────────────────────────────────────────
+
+class MJPEGStreamer:
+    """Captures frames from a V4L2 device via ffmpeg and serves them as MJPEG."""
+
+    def __init__(self):
+        self._lock   = threading.Lock()
+        self._frame  = b""
+        self._proc   = None
+        self._thread = None
+        self._device = os.environ.get("VIDEO_DEVICE", "/dev/video0")
+
+    def _capture_loop(self):
+        cmd = [
+            "ffmpeg", "-loglevel", "error",
+            "-f", "v4l2", "-framerate", "15",
+            "-i", self._device,
+            "-vf", "scale=640:480",
+            "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "5", "pipe:1",
+        ]
+        try:
+            self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            buf = b""
+            while True:
+                chunk = self._proc.stdout.read(16384)
+                if not chunk:
+                    break
+                buf += chunk
+                # Carve JPEG frames by SOI/EOI markers
+                while True:
+                    s = buf.find(b"\xFF\xD8")
+                    e = buf.find(b"\xFF\xD9", s + 2) if s >= 0 else -1
+                    if s >= 0 and e >= 0:
+                        with self._lock:
+                            self._frame = buf[s:e + 2]
+                        buf = buf[e + 2:]
+                    else:
+                        break
+        except Exception as exc:
+            logger.warning(f"MJPEG capture error: {exc}")
+
+    def ensure_running(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._thread.start()
+
+    def get_frame(self) -> bytes:
+        with self._lock:
+            return self._frame
+
+    def stream_to(self, wfile):
+        """Write a continuous MJPEG response to wfile until the client disconnects."""
+        self.ensure_running()
+        boundary = b"--woof_frame"
+        try:
+            while True:
+                frame = self.get_frame()
+                if frame:
+                    wfile.write(boundary + b"\r\n")
+                    wfile.write(b"Content-Type: image/jpeg\r\n\r\n")
+                    wfile.write(frame + b"\r\n")
+                    wfile.flush()
+                time.sleep(1 / 15)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client disconnected
+
+
+_mjpeg = MJPEGStreamer()
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("Main")
@@ -226,6 +306,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             events = wa._bark_logger.get_recent_events(limit=500)
             self._send_json(events)
 
+        # ── Camera MJPEG stream ───────────────────────────────────────────────
+        elif path == "/video_feed":
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=woof_frame")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            _mjpeg.stream_to(self.wfile)
+
         # ── Clip audio files ──────────────────────────────────────────────────
         elif path.startswith("/clips/"):
             filename = os.path.basename(path)
@@ -257,9 +346,9 @@ signal.signal(signal.SIGINT, term_handler)
 wa = Woofalytics()
 
 
-def run_server(server_class=HTTPServer, handler_class=RequestHandler, port=8000):
+def run_server(handler_class=RequestHandler, port=8000):
     server_address = ("", port)
-    httpd = server_class(server_address, handler_class)
+    httpd = ThreadingHTTPServer(server_address, handler_class)
     print(f"Starting server on port {port}...")
     httpd.serve_forever()
 

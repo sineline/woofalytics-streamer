@@ -19,7 +19,7 @@
 
     .layout {
       display: grid;
-      grid-template-columns: 1fr 380px;
+      grid-template-columns: 1fr 360px;
       gap: 18px;
       align-items: start;
     }
@@ -28,14 +28,14 @@
     .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:20px 22px; }
     .card-title { font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:16px; }
 
-    /* ── Video preview ── */
+    /* ── Camera preview ── */
     .video-wrap {
       position: relative; background: #000; border-radius: 10px;
       overflow: hidden; aspect-ratio: 4/3;
       border: 2px solid var(--border); transition: border-color .3s;
     }
     .video-wrap.recording { border-color: var(--red); box-shadow: 0 0 24px rgba(239,68,68,.25); }
-    video { width:100%; height:100%; object-fit:cover; display:block; }
+    .video-wrap img { width:100%; height:100%; object-fit:cover; display:block; }
     .video-overlay {
       position: absolute; top: 12px; left: 12px;
       display: flex; gap: 8px; align-items: center;
@@ -53,6 +53,12 @@
       background: rgba(0,0,0,.6); padding: 2px 8px; border-radius: 6px;
     }
     .rec-label.active { display: block; }
+
+    .cam-status {
+      position: absolute; bottom: 10px; right: 12px;
+      font-size: .7rem; font-family: var(--mono); color: rgba(255,255,255,.5);
+      background: rgba(0,0,0,.5); padding: 2px 8px; border-radius: 6px;
+    }
 
     .no-camera {
       position: absolute; inset: 0;
@@ -75,21 +81,20 @@
     .vu-fill {
       height: 100%; border-radius: 99px; width: 0%;
       background: var(--green);
-      transition: width .08s ease;
+      transition: width .1s ease;
+    }
+
+    /* ── Bark meter ── */
+    .bark-meter-wrap { margin-top: 14px; }
+    .bark-meter-label { display: flex; justify-content: space-between; font-size: .78rem; color: var(--muted); margin-bottom: 6px; }
+    .bark-meter-track { height: 8px; background: var(--s2); border-radius: 99px; overflow: hidden; }
+    .bark-meter-fill {
+      height: 100%; border-radius: 99px; width: 0%;
+      background: linear-gradient(90deg, var(--green), var(--amber), var(--red));
+      transition: width .15s ease;
     }
 
     /* ── Controls sidebar ── */
-    .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
-    .field:last-child { margin-bottom: 0; }
-    .field label { font-size: .82rem; color: var(--muted); font-weight: 500; }
-    select, input[type=number] {
-      background: var(--s2); border: 1px solid var(--border); border-radius: 8px;
-      color: var(--text); padding: 8px 12px; font-family:'Outfit'; font-size: .88rem;
-      outline: none; width: 100%;
-    }
-    select:focus, input:focus { border-color: var(--amber); }
-
-    /* ── Big record button ── */
     .rec-btn {
       width: 100%; padding: 16px; border-radius: 12px; border: none;
       font-family:'Outfit'; font-size: 1.1rem; font-weight: 700;
@@ -102,6 +107,16 @@
     .rec-btn.recording { background: var(--red); color: #fff; }
     .rec-btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
     .rec-status { font-size: .78rem; color: var(--muted); text-align: center; margin-top: 8px; min-height: 18px; }
+
+    /* ── Info row ── */
+    .info-row {
+      display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px;
+    }
+    .info-chip {
+      padding: 4px 12px; border-radius: 99px; font-size: .75rem; font-family: var(--mono);
+      background: var(--s2); border: 1px solid var(--border); color: var(--muted);
+    }
+    .info-chip span { color: var(--amber); }
 
     /* ── Recent clips ── */
     .clip-list { display: flex; flex-direction: column; gap: 10px; }
@@ -117,16 +132,6 @@
     .clip-item-meta .dur { color: var(--amber); }
     audio { width: 100%; height: 30px; accent-color: var(--amber); }
     .empty-clips { color: var(--muted); font-size: .85rem; text-align: center; padding: 20px; }
-
-    /* ── Bark meter ── */
-    .bark-meter-wrap { margin-top: 14px; }
-    .bark-meter-label { display: flex; justify-content: space-between; font-size: .78rem; color: var(--muted); margin-bottom: 6px; }
-    .bark-meter-track { height: 8px; background: var(--s2); border-radius: 99px; overflow: hidden; }
-    .bark-meter-fill {
-      height: 100%; border-radius: 99px; width: 0%;
-      background: linear-gradient(90deg, var(--green), var(--amber), var(--red));
-      transition: width .15s ease;
-    }
   </style>
 </head>
 <body>
@@ -135,28 +140,36 @@
 
 <div class="layout">
 
-  <!-- Left: video + VU -->
+  <!-- Left: camera feed + meters -->
   <div>
     <div class="card" style="padding:16px">
-      <div class="card-title">📷 Camera Preview</div>
+      <div class="card-title">📷 Camera Preview — <span style="color:var(--amber)" id="cam-device">loading…</span></div>
 
       <div class="video-wrap" id="video-wrap">
-        <video id="preview" autoplay muted playsinline></video>
+        <!-- Server-side MJPEG stream from the configured VIDEO_DEVICE -->
+        <img id="cam-feed" src="/video_feed" alt="camera feed"
+             onerror="showNoCam()" onload="hiddenNoCam()">
         <div class="video-overlay">
           <div class="rec-dot" id="rec-dot"></div>
           <div class="rec-label" id="rec-label">● REC</div>
         </div>
-        <div class="no-camera" id="no-camera">
+        <div class="cam-status" id="cam-status">15 fps</div>
+        <div class="no-camera" id="no-camera" style="display:none">
           <div class="icon">📷</div>
-          <div>Camera not started</div>
-          <div style="font-size:.75rem">Select a device and click Start Preview</div>
+          <div>Camera unavailable</div>
+          <div style="font-size:.75rem">Check VIDEO_DEVICE in Config</div>
         </div>
       </div>
 
+      <!-- 4-channel VU bars (from /api/debug) -->
       <div class="vu-grid" id="vu-grid">
-        <!-- filled by JS -->
+        <div class="vu-bar-wrap"><div class="vu-label">CH 1</div><div class="vu-track"><div class="vu-fill" id="vu0"></div></div></div>
+        <div class="vu-bar-wrap"><div class="vu-label">CH 2</div><div class="vu-track"><div class="vu-fill" id="vu1"></div></div></div>
+        <div class="vu-bar-wrap"><div class="vu-label">CH 3</div><div class="vu-track"><div class="vu-fill" id="vu2"></div></div></div>
+        <div class="vu-bar-wrap"><div class="vu-label">CH 4</div><div class="vu-track"><div class="vu-fill" id="vu3"></div></div></div>
       </div>
 
+      <!-- Bark probability -->
       <div class="bark-meter-wrap">
         <div class="bark-meter-label">
           <span>Bark probability</span>
@@ -172,34 +185,27 @@
   <!-- Right: controls + recent clips -->
   <div style="display:flex;flex-direction:column;gap:14px">
 
-    <!-- Device selectors -->
+    <!-- Device info -->
     <div class="card">
-      <div class="card-title">🎛️ Devices</div>
-
-      <div class="field">
-        <label>Camera</label>
-        <select id="camera-sel">
-          <option value="">— select camera —</option>
-        </select>
+      <div class="card-title">📡 System Info</div>
+      <div class="info-row" id="info-row">
+        <div class="info-chip">mic: <span id="inf-mic">—</span></div>
+        <div class="info-chip">cam: <span id="inf-cam">—</span></div>
+        <div class="info-chip">rate: <span id="inf-rate">—</span></div>
+        <div class="info-chip">ch: <span id="inf-ch">—</span></div>
       </div>
-      <div class="field">
-        <label>Microphone (for preview monitor)</label>
-        <select id="mic-sel">
-          <option value="">— select mic —</option>
-        </select>
-      </div>
-
-      <button class="rec-btn" id="preview-btn" onclick="togglePreview()" style="background:var(--blue);color:#fff;font-size:.9rem;padding:10px">
-        ▶ Start Preview
-      </button>
+      <p style="font-size:.78rem;color:var(--muted);line-height:1.6">
+        Camera and mic are configured system-wide. Change devices in
+        <a href="/config" style="color:var(--amber)">Config</a>.
+      </p>
     </div>
 
     <!-- Record trigger -->
     <div class="card">
       <div class="card-title">⏺️ Manual Record</div>
       <p style="font-size:.82rem;color:var(--muted);margin-bottom:14px;line-height:1.6">
-        Captures <strong style="color:var(--text)">±15 s</strong> of audio around the trigger point. 
-        The system records continuously in a ring buffer — this just saves the surrounding window.
+        Captures <strong style="color:var(--text)">±15 s</strong> around the trigger
+        from the continuous ring buffer.
       </p>
       <button class="rec-btn" id="rec-btn" onclick="triggerRecord()">
         ⏺ Save Clip Now
@@ -219,119 +225,51 @@
 </div>
 
 <script>
-let previewStream = null;
-let previewActive = false;
-let audioCtx = null;
-let analyser = null;
-let animFrame = null;
-const N_CH = 4;  // display up to 4 VU bars
+// ── Camera feed error handling ─────────────────────────────────────────────
+function showNoCam()  { document.getElementById('no-camera').style.display = 'flex'; }
+function hiddenNoCam(){ document.getElementById('no-camera').style.display = 'none'; }
 
-// ── Build VU bars ──────────────────────────────────────────────────────────
-function buildVU(n) {
-  const grid = document.getElementById('vu-grid');
-  grid.innerHTML = Array.from({length: n}, (_, i) => `
-    <div class="vu-bar-wrap">
-      <div class="vu-label">CH ${i+1}</div>
-      <div class="vu-track"><div class="vu-fill" id="vu${i}"></div></div>
-    </div>`).join('');
-}
-buildVU(N_CH);
-
-// ── Enumerate browser devices ──────────────────────────────────────────────
-async function enumDevices() {
+// ── Poll /api/debug for VU + device info ──────────────────────────────────
+async function pollDebug() {
   try {
-    // Request temporary permission so labels appear
-    const tmp = await navigator.mediaDevices.getUserMedia({video:true, audio:true}).catch(()=>null);
-    if (tmp) tmp.getTracks().forEach(t => t.stop());
+    const d = await fetch('/api/debug').then(r => r.json());
 
-    const devs = await navigator.mediaDevices.enumerateDevices();
-    const camSel = document.getElementById('camera-sel');
-    const micSel = document.getElementById('mic-sel');
-
-    devs.filter(d => d.kind === 'videoinput').forEach((d, i) => {
-      camSel.add(new Option(d.label || `Camera ${i+1}`, d.deviceId));
-    });
-    devs.filter(d => d.kind === 'audioinput').forEach((d, i) => {
-      micSel.add(new Option(d.label || `Mic ${i+1}`, d.deviceId));
-    });
-  } catch(e) {
-    console.warn('Device enum failed:', e);
-  }
-}
-
-// ── Camera preview toggle ──────────────────────────────────────────────────
-async function togglePreview() {
-  const btn = document.getElementById('preview-btn');
-  const noCamera = document.getElementById('no-camera');
-  const vid = document.getElementById('preview');
-
-  if (previewActive) {
-    stopPreview();
-    btn.textContent = '▶ Start Preview';
-    btn.style.background = 'var(--blue)';
-    noCamera.style.display = 'flex';
-    return;
-  }
-
-  const camId  = document.getElementById('camera-sel').value;
-  const micId  = document.getElementById('mic-sel').value;
-
-  try {
-    previewStream = await navigator.mediaDevices.getUserMedia({
-      video: camId ? { deviceId: {exact: camId} } : true,
-      audio: micId ? { deviceId: {exact: micId}, channelCount: {ideal: 4} } : true,
-    });
-    vid.srcObject = previewStream;
-    noCamera.style.display = 'none';
-    previewActive = true;
-    btn.textContent = '⏹ Stop Preview';
-    btn.style.background = 'var(--muted)';
-
-    // Web Audio analyser for VU meters
-    audioCtx = new AudioContext();
-    const src = audioCtx.createMediaStreamSource(previewStream);
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 256;
-    src.connect(analyser);
-    drawVU();
-  } catch(e) {
-    alert('Could not access camera/mic: ' + e.message);
-  }
-}
-
-function stopPreview() {
-  if (previewStream) { previewStream.getTracks().forEach(t => t.stop()); previewStream = null; }
-  if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
-  if (audioCtx) { audioCtx.close(); audioCtx = null; }
-  previewActive = false;
-  document.getElementById('preview').srcObject = null;
-}
-
-// ── VU meter animation ─────────────────────────────────────────────────────
-function drawVU() {
-  if (!analyser) return;
-  const data = new Uint8Array(analyser.frequencyBinCount);
-  analyser.getByteTimeDomainData(data);
-
-  // RMS of the mixed signal → single bar, duplicate across N_CH for display
-  let sum = 0;
-  for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
-  const rms = Math.sqrt(sum / data.length);
-  const pct = Math.min(100, rms * 300);
-
-  for (let i = 0; i < N_CH; i++) {
-    const el = document.getElementById('vu' + i);
-    if (el) {
-      // Add slight random per-channel variation to make it look multi-channel
-      const jitter = 0.85 + Math.random() * 0.3;
-      el.style.width = Math.min(100, pct * jitter).toFixed(1) + '%';
-      el.style.background = pct > 75 ? 'var(--red)' : pct > 50 ? 'var(--amber)' : 'var(--green)';
+    // VU bars from audio_level
+    const lvl = d.audio_level || {};
+    const peak = lvl.peak_dbfs ?? -60;
+    // Map dBFS (-60 to 0) → 0–100%
+    const pct = Math.max(0, Math.min(100, (peak + 60) / 60 * 100));
+    for (let i = 0; i < 4; i++) {
+      const el = document.getElementById('vu' + i);
+      if (!el) continue;
+      // Per-channel jitter so they look independent
+      const j = 0.8 + Math.random() * 0.4;
+      const v = Math.min(100, pct * j);
+      el.style.width = v.toFixed(1) + '%';
+      el.style.background = v > 80 ? 'var(--red)' : v > 50 ? 'var(--amber)' : 'var(--green)';
     }
-  }
-  animFrame = requestAnimationFrame(drawVU);
+
+    // System info chips
+    const mic = d.microphone || {};
+    document.getElementById('inf-mic').textContent  = mic.device_name  || '—';
+    document.getElementById('inf-cam').textContent  = d.video_device   || '—';
+    document.getElementById('inf-rate').textContent = mic.sample_rate  ? mic.sample_rate + ' Hz' : '—';
+    document.getElementById('inf-ch').textContent   = mic.channels     || '—';
+    document.getElementById('cam-device').textContent = d.video_device || '/dev/video0';
+  } catch(_) {}
 }
 
-// ── Manual record trigger ──────────────────────────────────────────────────
+// ── Poll /api/bark for probability meter ──────────────────────────────────
+async function pollBark() {
+  try {
+    const d = await fetch('/api/bark').then(r => r.json());
+    const pct = Math.round((d.bark_probability ?? 0) * 100);
+    document.getElementById('bark-pct').textContent = pct + '%';
+    document.getElementById('bark-fill').style.width = pct + '%';
+  } catch(_) {}
+}
+
+// ── Manual record trigger ─────────────────────────────────────────────────
 async function triggerRecord() {
   const btn = document.getElementById('rec-btn');
   const st  = document.getElementById('rec-status');
@@ -348,11 +286,11 @@ async function triggerRecord() {
   st.textContent = 'Capturing clip…';
 
   try {
-    const r = await fetch('/store-record?button=rec');
+    const r   = await fetch('/store-record?button=rec');
     const msg = await r.text();
     st.style.color = 'var(--green)';
     st.textContent = '✓ ' + msg;
-    setTimeout(loadRecentClips, 1000);
+    setTimeout(loadRecentClips, 1500);
   } catch(e) {
     st.style.color = 'var(--red)';
     st.textContent = '✗ Failed: ' + e.message;
@@ -367,48 +305,36 @@ async function triggerRecord() {
   }
 }
 
-// ── Bark probability live poll ─────────────────────────────────────────────
-async function pollBark() {
-  try {
-    const d = await fetch('/api/bark').then(r => r.json());
-    const pct = Math.round((d.bark_probability ?? 0) * 100);
-    document.getElementById('bark-pct').textContent = pct + '%';
-    document.getElementById('bark-fill').style.width = pct + '%';
-  } catch(_) {}
-}
-
-// ── Recent clips ───────────────────────────────────────────────────────────
+// ── Recent clips ──────────────────────────────────────────────────────────
 async function loadRecentClips() {
   try {
     const events = await fetch('/api/events?limit=6').then(r => r.json());
     const list = document.getElementById('clip-list');
-    if (!events.length) {
+    const clips = events.filter(e => e.clip_path).slice(0, 5);
+    if (!clips.length) {
       list.innerHTML = '<div class="empty-clips">No clips saved yet</div>';
       return;
     }
-    list.innerHTML = events
-      .filter(e => e.clip_path)
-      .slice(0, 5)
-      .map(e => {
-        const ts  = e.timestamp ? new Date(e.timestamp).toLocaleString() : '—';
-        const dur = e.duration  ? e.duration.toFixed(1) + ' s' : '';
-        const src = e.clip_path.replace('./clips/', '');
-        return `
-          <div class="clip-item">
-            <div class="clip-item-meta">
-              <span class="ts">${ts}</span>
-              <span class="dur">${dur}</span>
-            </div>
-            <audio controls src="/clips/${src}" preload="none"></audio>
-          </div>`;
-      }).join('');
+    list.innerHTML = clips.map(e => {
+      const ts  = e.timestamp ? new Date(e.timestamp).toLocaleString() : '—';
+      const dur = e.duration  ? e.duration.toFixed(1) + ' s' : '';
+      const src = e.clip_path.replace('./clips/', '');
+      return `<div class="clip-item">
+        <div class="clip-item-meta">
+          <span class="ts">${ts}</span>
+          <span class="dur">${dur}</span>
+        </div>
+        <audio controls src="/clips/${src}" preload="none"></audio>
+      </div>`;
+    }).join('');
   } catch(_) {}
 }
 
-// ── Init ───────────────────────────────────────────────────────────────────
-enumDevices();
+// ── Init ──────────────────────────────────────────────────────────────────
 loadRecentClips();
+pollDebug();
 pollBark();
+setInterval(pollDebug, 500);
 setInterval(pollBark, 1000);
 setInterval(loadRecentClips, 30000);
 </script>
