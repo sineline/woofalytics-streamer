@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Woofalytics — Train Model</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #07080f; --surface: #0f1120; --s2: #161828;
+      --border: rgba(255,255,255,0.07); --amber: #f59e0b;
+      --red: #ef4444; --green: #22c55e; --blue: #3b82f6; --purple: #a855f7;
+      --text: #e2e8f0; --muted: #64748b; --r: 14px;
+      --mono: 'JetBrains Mono', monospace;
+    }
+    body { font-family:'Outfit',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; padding:24px; }
+
+    .layout { display:grid; grid-template-columns:1fr 340px; gap:18px; align-items:start; }
+    @media(max-width:900px){ .layout{grid-template-columns:1fr;} }
+
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:20px 22px; }
+    .card-title { font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:16px; }
+
+    /* ── Status hero ── */
+    .status-hero {
+      display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px;
+      padding:20px 24px; border-radius:var(--r);
+      background: linear-gradient(135deg, rgba(168,85,247,.12), rgba(59,130,246,.08));
+      border: 1px solid rgba(168,85,247,.2); margin-bottom:18px;
+    }
+    .status-label { font-size:1.2rem; font-weight:700; }
+    .status-sub   { font-size:.82rem; color:var(--muted); margin-top:4px; font-family:var(--mono); }
+    .state-badge {
+      padding:4px 14px; border-radius:99px; font-size:.75rem; font-weight:700;
+      font-family:var(--mono); text-transform:uppercase;
+    }
+    .state-idle    { background:rgba(100,116,139,.2); color:var(--muted); }
+    .state-running { background:rgba(245,158,11,.15); color:var(--amber); animation:pulse 1.2s infinite alternate; }
+    .state-done    { background:rgba(34,197,94,.15);  color:var(--green); }
+    .state-error   { background:rgba(239,68,68,.15);  color:var(--red); }
+    @keyframes pulse { from{opacity:.6} to{opacity:1} }
+
+    /* ── Progress bar ── */
+    .progress-wrap { margin:14px 0; }
+    .progress-label { display:flex; justify-content:space-between; font-size:.78rem; color:var(--muted); margin-bottom:6px; }
+    .progress-track { height:6px; background:var(--s2); border-radius:99px; overflow:hidden; }
+    .progress-fill  {
+      height:100%; border-radius:99px; width:0%;
+      background:linear-gradient(90deg, var(--purple), var(--blue));
+      transition:width .5s ease;
+    }
+
+    /* ── Loss chart ── */
+    .chart-wrap { position:relative; height:140px; margin-top:6px; }
+    canvas { width:100%!important; height:100%!important; }
+
+    /* ── Clip list ── */
+    .clip-grid { display:flex; flex-direction:column; gap:8px; max-height:560px; overflow-y:auto; }
+    .clip-row {
+      display:grid; grid-template-columns:auto 1fr auto auto; align-items:center;
+      gap:10px; padding:10px 12px; border-radius:10px;
+      background:var(--s2); border:1px solid var(--border); transition:border-color .2s;
+    }
+    .clip-row.labeled-bark     { border-color:rgba(34,197,94,.35); }
+    .clip-row.labeled-notbark  { border-color:rgba(239,68,68,.35); }
+    .clip-row.labeled-auto     { border-color:rgba(245,158,11,.25); }
+    .clip-ts   { font-size:.72rem; color:var(--muted); font-family:var(--mono); white-space:nowrap; }
+    .clip-prob { font-size:.75rem; font-family:var(--mono); }
+    .label-btns { display:flex; gap:5px; }
+    .lbtn {
+      padding:4px 10px; border-radius:6px; border:1px solid var(--border);
+      font-size:.72rem; font-weight:600; cursor:pointer; transition:all .15s;
+      background:transparent; color:var(--muted);
+    }
+    .lbtn.bark    { border-color:var(--green); color:var(--green); }
+    .lbtn.notbark { border-color:var(--red);   color:var(--red); }
+    .lbtn.bark:hover    { background:rgba(34,197,94,.15); }
+    .lbtn.notbark:hover { background:rgba(239,68,68,.15); }
+    .lbtn.active-bark    { background:rgba(34,197,94,.25); border-color:var(--green); color:var(--green); }
+    .lbtn.active-notbark { background:rgba(239,68,68,.25); border-color:var(--red);   color:var(--red); }
+    audio { height:26px; width:100%; accent-color:var(--amber); min-width:80px; }
+
+    /* ── Sidebar controls ── */
+    .field { display:flex; flex-direction:column; gap:6px; margin-bottom:14px; }
+    .field:last-child { margin-bottom:0; }
+    .field label { font-size:.82rem; color:var(--muted); font-weight:500; }
+    select, input[type=number], input[type=range] {
+      background:var(--s2); border:1px solid var(--border); border-radius:8px;
+      color:var(--text); padding:8px 12px; font-family:'Outfit'; font-size:.88rem;
+      outline:none; width:100%;
+    }
+    select:focus, input:focus { border-color:var(--amber); }
+    .slider-row { display:flex; gap:10px; align-items:center; }
+    .slider-val { font-size:.82rem; font-family:var(--mono); color:var(--amber); min-width:40px; }
+    .radio-group { display:flex; flex-direction:column; gap:8px; }
+    .radio-opt {
+      display:flex; align-items:center; gap:10px; padding:9px 12px;
+      border-radius:10px; border:1px solid var(--border); cursor:pointer; transition:all .2s;
+    }
+    .radio-opt:hover { border-color:rgba(168,85,247,.3); background:rgba(168,85,247,.04); }
+    .radio-opt input { accent-color:var(--purple); width:15px; height:15px; }
+    .radio-opt .ro-label { font-size:.86rem; font-weight:500; }
+    .radio-opt .ro-sub   { font-size:.73rem; color:var(--muted); }
+
+    .btn-train {
+      width:100%; padding:14px; border-radius:12px; border:none;
+      font-family:'Outfit'; font-size:1rem; font-weight:700;
+      cursor:pointer; transition:all .2s;
+      background:linear-gradient(135deg, var(--purple), var(--blue));
+      color:#fff; margin-top:6px;
+    }
+    .btn-train:hover { opacity:.88; transform:scale(1.01); }
+    .btn-train:disabled { opacity:.4; cursor:not-allowed; transform:none; }
+
+    /* ── Stats strip ── */
+    .stats-strip { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:16px; }
+    .stat-box { background:var(--s2); border-radius:10px; padding:12px; text-align:center; }
+    .stat-val  { font-size:1.1rem; font-weight:700; font-family:var(--mono); color:var(--purple); }
+    .stat-lbl  { font-size:.68rem; color:var(--muted); margin-top:3px; text-transform:uppercase; }
+
+    .msg-box { font-size:.78rem; font-family:var(--mono); color:var(--muted); padding:10px; background:var(--s2); border-radius:8px; min-height:36px; word-break:break-all; }
+    .msg-box.ok  { color:var(--green); }
+    .msg-box.err { color:var(--red); }
+
+    /* filter row */
+    .filter-row { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+    .filter-btn {
+      padding:5px 14px; border-radius:99px; font-size:.75rem; font-weight:600;
+      border:1px solid var(--border); background:transparent; color:var(--muted); cursor:pointer; transition:all .2s;
+    }
+    .filter-btn.active { background:rgba(168,85,247,.15); border-color:var(--purple); color:var(--purple); }
+    .select-all-btn {
+      padding:5px 14px; border-radius:99px; font-size:.75rem; font-weight:600;
+      border:1px solid var(--border); background:var(--s2); color:var(--text);
+      cursor:pointer; margin-left:auto;
+    }
+  </style>
+</head>
+<body>
+<script src="/nav.js"></script>
+
+<div class="layout">
+
+  <!-- LEFT: clip labelling -->
+  <div>
+
+    <!-- Training status hero -->
+    <div class="status-hero" id="status-hero">
+      <div>
+        <div class="status-label" id="st-label">Model Training</div>
+        <div class="status-sub" id="st-sub">Select and label clips, then start training →</div>
+      </div>
+      <span class="state-badge state-idle" id="st-badge">Idle</span>
+    </div>
+
+    <!-- Progress + loss chart -->
+    <div class="card" id="progress-card" style="margin-bottom:18px;display:none">
+      <div class="card-title">📈 Training Progress</div>
+      <div class="progress-wrap">
+        <div class="progress-label">
+          <span id="prog-text">Epoch 0 / 0</span>
+          <span id="prog-metrics">—</span>
+        </div>
+        <div class="progress-track"><div class="progress-fill" id="prog-fill"></div></div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="loss-chart"></canvas>
+      </div>
+    </div>
+
+    <!-- Clip selector -->
+    <div class="card">
+      <div class="card-title">🎵 Clip Library — Label for Training</div>
+
+      <div class="stats-strip">
+        <div class="stat-box"><div class="stat-val" id="cnt-total">—</div><div class="stat-lbl">Clips</div></div>
+        <div class="stat-box"><div class="stat-val" id="cnt-bark" style="color:var(--green)">—</div><div class="stat-lbl">Labelled Bark</div></div>
+        <div class="stat-box"><div class="stat-val" id="cnt-notbark" style="color:var(--red)">—</div><div class="stat-lbl">Labelled Not-Bark</div></div>
+      </div>
+
+      <div class="filter-row">
+        <button class="filter-btn active" onclick="setFilter('all',this)">All</button>
+        <button class="filter-btn" onclick="setFilter('unlabelled',this)">Unlabelled</button>
+        <button class="filter-btn" onclick="setFilter('bark',this)">Bark ✓</button>
+        <button class="filter-btn" onclick="setFilter('notbark',this)">Not-Bark ✓</button>
+        <button class="select-all-btn" onclick="labelAll(1)">✓ All → Bark</button>
+        <button class="select-all-btn" onclick="labelAll(0)" style="color:var(--red)">✗ All → Not-Bark</button>
+      </div>
+
+      <div class="clip-grid" id="clip-grid">
+        <div style="color:var(--muted);text-align:center;padding:20px">Loading clips…</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- RIGHT: training controls -->
+  <div style="display:flex;flex-direction:column;gap:14px">
+
+    <div class="card">
+      <div class="card-title">⚙️ Training Mode</div>
+      <div class="radio-group" style="margin-bottom:14px">
+        <label class="radio-opt">
+          <input type="radio" name="train_mode" value="fine_tune" checked>
+          <div>
+            <div class="ro-label">Fine-tune (incremental)</div>
+            <div class="ro-sub">Load existing model weights, adapt to new data. Faster, needs fewer clips.</div>
+          </div>
+        </label>
+        <label class="radio-opt">
+          <input type="radio" name="train_mode" value="full">
+          <div>
+            <div class="ro-label">Full retrain</div>
+            <div class="ro-sub">Re-initialise weights from scratch. Needs ≥50 labelled clips for good results.</div>
+          </div>
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🎛️ Hyperparameters</div>
+
+      <div class="field">
+        <label>Epochs</label>
+        <div class="slider-row">
+          <input type="range" id="epochs" min="5" max="100" value="20"
+                 oninput="document.getElementById('epochs-val').textContent=this.value">
+          <span class="slider-val" id="epochs-val">20</span>
+        </div>
+      </div>
+      <div class="field">
+        <label>Learning rate</label>
+        <select id="lr">
+          <option value="0.01">0.01 — fast, aggressive</option>
+          <option value="0.001" selected>0.001 — default</option>
+          <option value="0.0001">0.0001 — conservative</option>
+          <option value="0.00001">0.00001 — very slow</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🚀 Run</div>
+      <div id="training-summary" style="font-size:.82rem;color:var(--muted);margin-bottom:12px;min-height:36px">
+        Label at least 10 clips (mix of bark and not-bark) to enable training.
+      </div>
+      <button class="btn-train" id="train-btn" onclick="startTraining()" disabled>
+        🧠 Start Training
+      </button>
+      <div style="margin-top:12px">
+        <div class="card-title">Last message</div>
+        <div class="msg-box" id="train-msg">—</div>
+      </div>
+    </div>
+
+    <!-- Model info -->
+    <div class="card">
+      <div class="card-title">🗄️ Model Backups</div>
+      <div id="backup-info" style="font-size:.82rem;color:var(--muted)">No backup yet this session.</div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let allClips = [];
+let labels   = {};   // event_id → 1 (bark) | 0 (not-bark)
+let filter   = 'all';
+let pollTimer = null;
+
+// ── Load clips ─────────────────────────────────────────────────────────────────
+async function loadClips() {
+  try {
+    allClips = await fetch('/api/train/clips').then(r => r.json());
+    // Seed labels from DB
+    allClips.forEach(e => {
+      if (e.label !== null && e.label !== undefined) labels[e.id] = e.label;
+    });
+    renderGrid();
+    updateSummary();
+  } catch(e) { console.error(e); }
+}
+
+// ── Render clip grid ──────────────────────────────────────────────────────────
+function setFilter(f, btn) {
+  filter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderGrid();
+}
+
+function renderGrid() {
+  let clips = allClips.filter(e => e.clip_path);
+
+  if (filter === 'unlabelled') clips = clips.filter(e => labels[e.id] === undefined);
+  else if (filter === 'bark')   clips = clips.filter(e => labels[e.id] === 1);
+  else if (filter === 'notbark') clips = clips.filter(e => labels[e.id] === 0);
+
+  document.getElementById('cnt-total').textContent   = allClips.length;
+  document.getElementById('cnt-bark').textContent    = Object.values(labels).filter(v=>v===1).length;
+  document.getElementById('cnt-notbark').textContent = Object.values(labels).filter(v=>v===0).length;
+
+  if (!clips.length) {
+    document.getElementById('clip-grid').innerHTML =
+      '<div style="color:var(--muted);text-align:center;padding:20px">No clips in this filter.</div>';
+    return;
+  }
+
+  document.getElementById('clip-grid').innerHTML = clips.map(e => {
+    const lbl  = labels[e.id];
+    const ts   = e.timestamp ? new Date(e.timestamp).toLocaleString() : '—';
+    const prob = e.bark_prob !== null ? (e.bark_prob * 100).toFixed(0) + '%' : '—';
+    const probCol = (e.bark_prob > 0.7) ? 'var(--green)' : (e.bark_prob > 0.4) ? 'var(--amber)' : 'var(--red)';
+    const rowCls = lbl === 1 ? 'labeled-bark' : lbl === 0 ? 'labeled-notbark' : '';
+    const fn     = (e.clip_path || '').replace('./clips/', '');
+    return `<div class="clip-row ${rowCls}" id="row-${e.id}">
+      <audio src="/clips/${fn}" preload="none" controls></audio>
+      <div class="clip-ts">${ts}<br><span style="color:${probCol}">${prob}</span></div>
+      <div class="label-btns">
+        <button class="lbtn bark ${lbl===1?'active-bark':''}" onclick="setLabel(${e.id},1,this)">🐕 Bark</button>
+        <button class="lbtn notbark ${lbl===0?'active-notbark':''}" onclick="setLabel(${e.id},0,this)">✗ Not-Bark</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function setLabel(id, label, btn) {
+  labels[id] = label;
+  // Persist to DB
+  fetch(`/api/events/${id}`, {
+    method: 'PATCH',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({label}),
+  });
+  renderGrid();
+  updateSummary();
+}
+
+async function labelAll(label) {
+  const visible = allClips.filter(e => {
+    if (filter === 'unlabelled') return labels[e.id] === undefined && e.clip_path;
+    return e.clip_path;
+  });
+  visible.forEach(e => { labels[e.id] = label; });
+  // Batch persist
+  for (const e of visible) {
+    fetch(`/api/events/${e.id}`, {
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({label}),
+    });
+  }
+  renderGrid();
+  updateSummary();
+}
+
+function updateSummary() {
+  const nBark    = Object.values(labels).filter(v=>v===1).length;
+  const nNotBark = Object.values(labels).filter(v=>v===0).length;
+  const total    = nBark + nNotBark;
+  const btn      = document.getElementById('train-btn');
+  const summary  = document.getElementById('training-summary');
+  if (total < 10) {
+    summary.innerHTML = `<span style="color:var(--amber)">⚠ ${total}/10 minimum clips labelled.</span> Label at least 10 (mix of both classes).`;
+    btn.disabled = true;
+  } else {
+    summary.innerHTML = `<span style="color:var(--green)">✓ Ready:</span> ${nBark} bark clips + ${nNotBark} not-bark clips selected.`;
+    btn.disabled = false;
+  }
+}
+
+// ── Training ──────────────────────────────────────────────────────────────────
+async function startTraining() {
+  const clips = Object.entries(labels).map(([id, label]) => {
+    const ev = allClips.find(e => e.id == id);
+    return ev ? { path: ev.clip_path, label } : null;
+  }).filter(Boolean);
+
+  const mode   = document.querySelector('[name=train_mode]:checked').value;
+  const epochs = parseInt(document.getElementById('epochs').value);
+  const lr     = parseFloat(document.getElementById('lr').value);
+
+  document.getElementById('train-btn').disabled = true;
+  document.getElementById('progress-card').style.display = '';
+
+  const result = await fetch('/api/train', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({clips, mode, epochs, lr}),
+  }).then(r=>r.json());
+
+  if (result.error) {
+    document.getElementById('train-msg').textContent = '✗ ' + result.error;
+    document.getElementById('train-btn').disabled = false;
+    return;
+  }
+
+  pollTimer = setInterval(pollStatus, 1500);
+}
+
+// ── Status poll ───────────────────────────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const s = await fetch('/api/train').then(r=>r.json());
+    updateStatusUI(s);
+    if (s.state === 'done' || s.state === 'error') {
+      clearInterval(pollTimer);
+      document.getElementById('train-btn').disabled = false;
+    }
+  } catch(_) {}
+}
+
+let lossHistory = [];
+function updateStatusUI(s) {
+  const badge  = document.getElementById('st-badge');
+  const stSub  = document.getElementById('st-sub');
+  const msg    = document.getElementById('train-msg');
+  const fill   = document.getElementById('prog-fill');
+  const ptext  = document.getElementById('prog-text');
+  const pmet   = document.getElementById('prog-metrics');
+
+  // Badge
+  badge.className = 'state-badge state-' + s.state;
+  badge.textContent = s.state.toUpperCase();
+
+  stSub.textContent = s.message || '—';
+  msg.textContent   = s.message || '—';
+  msg.className     = 'msg-box' + (s.state==='error'?' err':s.state==='done'?' ok':'');
+
+  // Progress
+  if (s.total_epochs > 0) {
+    const pct = (s.epoch / s.total_epochs) * 100;
+    fill.style.width = pct.toFixed(1) + '%';
+    ptext.textContent = `Epoch ${s.epoch} / ${s.total_epochs}`;
+    if (s.accuracy !== null)
+      pmet.textContent = `loss ${s.loss} · val_loss ${s.val_loss} · acc ${(s.accuracy*100).toFixed(1)}%`;
+  }
+
+  // Loss chart
+  if (s.loss_history && s.loss_history.length) {
+    lossHistory = s.loss_history;
+    drawLossChart(lossHistory);
+  }
+
+  // Backup
+  if (s.backup_path) {
+    document.getElementById('backup-info').innerHTML =
+      `<span style="color:var(--green)">✓ Backup saved:</span><br>
+       <span style="font-family:var(--mono);font-size:.72rem;color:var(--muted)">${s.backup_path}</span>`;
+  }
+}
+
+// ── Minimal loss chart (canvas) ───────────────────────────────────────────────
+function drawLossChart(history) {
+  const canvas = document.getElementById('loss-chart');
+  const ctx    = canvas.getContext('2d');
+  const W = canvas.offsetWidth || 400;
+  const H = canvas.offsetHeight || 140;
+  canvas.width  = W;
+  canvas.height = H;
+
+  ctx.clearRect(0, 0, W, H);
+
+  const losses    = history.map(h => h.loss);
+  const valLosses = history.map(h => h.val_loss);
+  const allVals   = [...losses, ...valLosses];
+  const minV = Math.min(...allVals);
+  const maxV = Math.max(...allVals);
+  const range = maxV - minV || 1;
+
+  const pad = {t:10, r:10, b:22, l:36};
+  const plotW = W - pad.l - pad.r;
+  const plotH = H - pad.t - pad.b;
+
+  function x(i) { return pad.l + (i / (history.length - 1 || 1)) * plotW; }
+  function y(v) { return pad.t + (1 - (v - minV) / range) * plotH; }
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const yy = pad.t + (i / 4) * plotH;
+    ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(W - pad.r, yy); ctx.stroke();
+    ctx.fillStyle = 'rgba(100,116,139,.7)';
+    ctx.font = '9px JetBrains Mono';
+    ctx.fillText((maxV - (i/4) * range).toFixed(3), 2, yy + 3);
+  }
+
+  function drawLine(data, color) {
+    if (data.length < 2) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 2;
+    ctx.lineJoin    = 'round';
+    ctx.beginPath();
+    data.forEach((v, i) => { i === 0 ? ctx.moveTo(x(i), y(v)) : ctx.lineTo(x(i), y(v)); });
+    ctx.stroke();
+  }
+
+  drawLine(losses,    '#a855f7');   // purple = train loss
+  drawLine(valLosses, '#3b82f6');   // blue   = val loss
+
+  // Legend
+  ctx.font = '10px Outfit';
+  ctx.fillStyle = '#a855f7'; ctx.fillRect(pad.l, H - 16, 10, 3);
+  ctx.fillStyle = 'rgba(200,200,200,.7)'; ctx.fillText('train loss', pad.l + 14, H - 9);
+  ctx.fillStyle = '#3b82f6'; ctx.fillRect(pad.l + 90, H - 16, 10, 3);
+  ctx.fillStyle = 'rgba(200,200,200,.7)'; ctx.fillText('val loss', pad.l + 104, H - 9);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadClips();
+// Restore any in-progress training state on page load
+pollStatus();
+</script>
+</body>
+</html>

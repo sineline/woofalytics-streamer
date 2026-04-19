@@ -42,7 +42,8 @@ class BarkLogger:
             """)
             # Migrations for existing DBs
             for col_def in ["doa REAL", "avg_dbfs REAL",
-                            "upload_status TEXT", "upload_url TEXT"]:
+                            "upload_status TEXT", "upload_url TEXT",
+                            "label INTEGER"]:   # label: 1=bark, 0=not-bark, NULL=auto
                 try:
                     c.execute(f"ALTER TABLE events ADD COLUMN {col_def}")
                 except Exception:
@@ -102,13 +103,13 @@ class BarkLogger:
                                 "INSERT OR IGNORE INTO dogs (dog_id, name, created) VALUES (?,?,?)",
                                 (dog_id, dog_id, timestamp),
                             )
-                    c.execute(
+                    cur = c.execute(
                         "INSERT INTO events "
                         "(timestamp,clip_path,bark_prob,peak_dbfs,avg_dbfs,duration,doa,dog_id) "
                         "VALUES (?,?,?,?,?,?,?,?)",
                         (timestamp, clip_path, bark_prob, peak_dbfs, avg_dbfs, duration, doa, dog_id),
                     )
-                    event_id = c.lastrowid
+                    event_id = cur.lastrowid
                 self._logger.info(
                     f"Logged bark: [{dog_id}] prob={bark_prob:.2f} "
                     f"peak={peak_dbfs:.1f}dBFS doa={doa:.0f}°"
@@ -126,6 +127,21 @@ class BarkLogger:
                     "UPDATE events SET upload_status=?, upload_url=? WHERE id=?",
                     (status, url, event_id),
                 )
+
+    def set_label(self, event_id: int, label: int):
+        """Manually label an event: 1=bark, 0=not-bark."""
+        with self._lock:
+            with self._conn() as c:
+                c.execute("UPDATE events SET label=? WHERE id=?", (label, event_id))
+
+    def get_labelled_clips(self) -> list:
+        """Return all events that have an explicit label set, for training."""
+        with self._conn() as c:
+            cur = c.execute(
+                "SELECT id, clip_path, label FROM events "
+                "WHERE label IS NOT NULL AND clip_path IS NOT NULL"
+            )
+            return [dict(zip([d[0] for d in cur.description], row)) for row in cur.fetchall()]
 
     def delete_event(self, event_id):
         """Delete an event record. Returns clip_path so caller can delete the file."""
@@ -150,7 +166,7 @@ class BarkLogger:
         with self._conn() as c:
             cols_sel = (
                 "id,timestamp,clip_path,bark_prob,peak_dbfs,avg_dbfs,"
-                "duration,doa,dog_id,upload_status,upload_url"
+                "duration,doa,dog_id,upload_status,upload_url,label"
             )
             if dog_id:
                 cur = c.execute(

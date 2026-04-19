@@ -7,6 +7,7 @@ from urllib.parse import urlparse, parse_qs
 import glob
 import settings as cfg_store
 from record import Woofalytics
+import trainer as _trainer_mod
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("Main")
@@ -74,6 +75,13 @@ class RequestHandler(BaseHTTPRequestHandler):
             if "auto_stream" in data:
                 pass  # schedule handled by stream page
             self._send_json(cfg_store.get_public())
+        elif parsed.path == "/api/train":
+            clips  = data.get("clips", [])   # [{path, label}, ...]
+            mode   = data.get("mode", "fine_tune")
+            epochs = int(data.get("epochs", 20))
+            lr     = float(data.get("lr", 1e-3))
+            result = _trainer_mod.get_job().start(clips, mode=mode, epochs=epochs, lr=lr)
+            self._send_json(result)
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -93,7 +101,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
         # PATCH /api/events/<id>  { "dog_id": "Dog 2" }
         elif len(parts) == 3 and parts[0] == "api" and parts[1] == "events":
-            wa._bark_logger.retag_event(int(parts[2]), data["dog_id"])
+            if "dog_id" in data:
+                wa._bark_logger.retag_event(int(parts[2]), data["dog_id"])
+            if "label" in data:
+                wa._bark_logger.set_label(int(parts[2]), int(data["label"]))
             self._send_json({"ok": True})
         else:
             self._send_json({"error": "not found"}, 404)
@@ -130,6 +141,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_html("./html/stream.html")
         elif path == "/rec":
             self._send_html("./html/record.html")
+        elif path == "/train":
+            self._send_html("./html/train.html")
 
         elif path == "/nav.js":
             self.send_response(200)
@@ -146,7 +159,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain")
                 self.end_headers()
-                count = len(list(glob.glob("./clips/*.wav")))
+                count = len(list(glob.glob("./clips/*.wav"))) + len(list(glob.glob("./clips/*.mp3")))
                 self.wfile.write(f"Recorded! {count} clips in storage.".encode())
             else:
                 self.send_response(404)
@@ -205,13 +218,22 @@ class RequestHandler(BaseHTTPRequestHandler):
                     lines = f.readlines()
             self._send_json({"lines": lines[-n:]})
 
+        elif path == "/api/train":
+            self._send_json(_trainer_mod.get_job().get_status())
+
+        elif path == "/api/train/clips":
+            # Return all events available for labelling
+            events = wa._bark_logger.get_recent_events(limit=500)
+            self._send_json(events)
+
         # ── Clip audio files ──────────────────────────────────────────────────
         elif path.startswith("/clips/"):
             filename = os.path.basename(path)
             filepath = os.path.join("./clips", filename)
             if os.path.isfile(filepath):
                 self.send_response(200)
-                self.send_header("Content-Type", "audio/wav")
+                ctype = "audio/mpeg" if filepath.endswith(".mp3") else "audio/wav"
+                self.send_header("Content-Type", ctype)
                 self.send_header("Accept-Ranges", "bytes")
                 self.end_headers()
                 with open(filepath, "rb") as f:

@@ -215,7 +215,7 @@ class Woofalytics:
 
         while not self._stop_flag:
             try:
-                data = stream.read(self._chunk)
+                data = stream.read(self._chunk, exception_on_overflow=False)
             except OSError as ex:
                 self._logger.exception(ex)
                 # Terminate the PortAudio interface
@@ -231,7 +231,7 @@ class Woofalytics:
                     input_device_index=self._recording_device_index,
                 )
 
-                data = stream.read(self._chunk)
+                data = stream.read(self._chunk, exception_on_overflow=False)
 
             record_buffer.append(data)
 

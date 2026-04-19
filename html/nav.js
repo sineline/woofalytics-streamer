@@ -107,6 +107,7 @@
     { href: '/analytics', label: 'Analytics' },
     { href: '/library',   label: 'Library'   },
     { href: '/stream',    label: '📺 Stream'  },
+    { href: '/train',     label: '🧠 Train'   },
     { href: '/debug',     label: 'Debug'     },
     { href: '/config',    label: 'Config'    },
     { href: '/rec',       label: 'Record'    },
