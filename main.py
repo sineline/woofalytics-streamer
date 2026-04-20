@@ -246,6 +246,24 @@ class RequestHandler(BaseHTTPRequestHandler):
         else:
             self._send_json({"error": "not found"}, 404)
 
+    def do_HEAD(self):
+        """Handle HEAD requests — needed for audio seeking (Range probes)."""
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path.startswith("/clips/"):
+            filename = os.path.basename(path)
+            filepath = os.path.join("./clips", filename)
+            if os.path.isfile(filepath):
+                ctype = "audio/mpeg" if filepath.endswith(".mp3") else "audio/wav"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", str(os.path.getsize(filepath)))
+                self.end_headers()
+                return
+        self.send_response(404)
+        self.end_headers()
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -360,18 +378,41 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             _mjpeg.stream_to(self.wfile)
 
-        # ── Clip audio files ──────────────────────────────────────────────────
+        # ── Clip audio files (Range-request aware for seeking) ────────────
         elif path.startswith("/clips/"):
             filename = os.path.basename(path)
             filepath = os.path.join("./clips", filename)
             if os.path.isfile(filepath):
-                self.send_response(200)
                 ctype = "audio/mpeg" if filepath.endswith(".mp3") else "audio/wav"
-                self.send_header("Content-Type", ctype)
-                self.send_header("Accept-Ranges", "bytes")
-                self.end_headers()
-                with open(filepath, "rb") as f:
-                    self.wfile.write(f.read())
+                file_size = os.path.getsize(filepath)
+                range_hdr = self.headers.get("Range")
+
+                if range_hdr and range_hdr.startswith("bytes="):
+                    # Parse "bytes=START-" or "bytes=START-END"
+                    range_spec = range_hdr[6:]
+                    parts = range_spec.split("-", 1)
+                    start = int(parts[0]) if parts[0] else 0
+                    end = int(parts[1]) if (len(parts) > 1 and parts[1]) else file_size - 1
+                    end = min(end, file_size - 1)
+                    length = end - start + 1
+
+                    self.send_response(206)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                    self.send_header("Content-Length", str(length))
+                    self.end_headers()
+                    with open(filepath, "rb") as f:
+                        f.seek(start)
+                        self.wfile.write(f.read(length))
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Content-Length", str(file_size))
+                    self.end_headers()
+                    with open(filepath, "rb") as f:
+                        self.wfile.write(f.read())
             else:
                 self.send_response(404)
                 self.end_headers()
