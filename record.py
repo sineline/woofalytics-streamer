@@ -354,10 +354,14 @@ class Woofalytics:
             # Multi-channel: compute DOA across all mic channels.
             # PS Eye 4-mic array gives real directional estimates.
             audio_array = audio_array.reshape((self._channels, -1), order="F")
-            corr = corr_matrix_estimate(audio_array.T, imp="fast")
-            doa1 = np.argmax(DOA_Bartlett(corr, self.ula_scanning_vectors))
-            doa2 = np.argmax(DOA_Capon(corr, self.ula_scanning_vectors))
-            doa3 = np.argmax(DOA_MEM(corr, self.ula_scanning_vectors))
+            try:
+                corr = corr_matrix_estimate(audio_array.T, imp="fast")
+                doa1 = np.argmax(DOA_Bartlett(corr, self.ula_scanning_vectors))
+                doa2 = np.argmax(DOA_Capon(corr, self.ula_scanning_vectors))
+                doa3 = np.argmax(DOA_MEM(corr, self.ula_scanning_vectors))
+            except Exception:
+                # Singular matrix or other DOA failure (common with non-array mics)
+                doa1 = doa2 = doa3 = 90
             # Model only needs single channel — use channel 0
             audio_array = audio_array[0:1, :]
         else:

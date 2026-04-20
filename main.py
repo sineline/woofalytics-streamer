@@ -13,6 +13,11 @@ import settings as cfg_store
 from record import Woofalytics
 import trainer as _trainer_mod
 
+try:
+    from overlay import draw_overlay as _draw_overlay
+except ImportError:
+    _draw_overlay = None
+
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     """HTTP server that handles each request in its own thread."""
@@ -31,6 +36,7 @@ class MJPEGStreamer:
         self._frame  = b""
         self._proc   = None
         self._thread = None
+        self._data_provider = None   # set via set_data_provider()
 
     def _current_device(self) -> str:
         # settings.py takes precedence; fall back to env var
@@ -84,6 +90,22 @@ class MJPEGStreamer:
         with self._lock:
             self._frame = b""
 
+    def set_data_provider(self, provider):
+        """Attach a Woofalytics instance so the overlay can read live data."""
+        self._data_provider = provider
+
+    def _overlay_data(self):
+        """Build the overlay-data dict from the attached provider."""
+        dp = self._data_provider
+        if dp is None:
+            return None
+        return {
+            "doa":         dp._last_doa,
+            "bark_prob":   dp._model_last_pred,
+            "audio_level": dp._current_audio_level,
+            "threshold":   dp._bark_prob_threshold,
+        }
+
     def get_frame(self) -> bytes:
         with self._lock:
             return self._frame
@@ -96,6 +118,11 @@ class MJPEGStreamer:
             while True:
                 frame = self.get_frame()
                 if frame:
+                    # Apply HUD overlay (DOA compass, bark prob, audio levels)
+                    if _draw_overlay:
+                        data = self._overlay_data()
+                        if data:
+                            frame = _draw_overlay(frame, data)
                     wfile.write(boundary + b"\r\n")
                     wfile.write(b"Content-Type: image/jpeg\r\n\r\n")
                     wfile.write(frame + b"\r\n")
@@ -362,6 +389,7 @@ def term_handler(signum, frame):
 
 signal.signal(signal.SIGINT, term_handler)
 wa = Woofalytics()
+_mjpeg.set_data_provider(wa)
 
 
 def run_server(handler_class=RequestHandler, port=8000):
