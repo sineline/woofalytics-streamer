@@ -160,7 +160,22 @@ class BarkLogger:
             with self._conn() as c:
                 c.execute("UPDATE events SET dog_id=? WHERE id=?", (dog_id, event_id))
 
+    def get_event_by_id(self, event_id):
+        """Return a single event dict by ID, or None."""
+        with self._conn() as c:
+            cols_sel = (
+                "id,timestamp,clip_path,bark_prob,peak_dbfs,avg_dbfs,"
+                "duration,doa,dog_id,upload_status,upload_url,label"
+            )
+            cur = c.execute(f"SELECT {cols_sel} FROM events WHERE id=?", (event_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cur.description]
+            return dict(zip(cols, row))
+
     # ── Queries ───────────────────────────────────────────────────────────────
+
 
     def get_recent_events(self, limit=50, dog_id=None):
         with self._conn() as c:

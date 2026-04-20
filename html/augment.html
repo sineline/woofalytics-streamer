@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Woofalytics — Augmentation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #07080f; --surface: #0f1120; --s2: #161828;
+      --border: rgba(255,255,255,0.07); --amber: #f59e0b;
+      --green: #22c55e; --red: #ef4444; --blue: #3b82f6;
+      --text: #e2e8f0; --muted: #64748b; --r: 14px;
+      --mono: 'JetBrains Mono', monospace;
+    }
+    body { font-family:'Outfit',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; padding:24px; }
+
+    .page-title { font-size:1.6rem; font-weight:700; margin-bottom:6px; }
+    .page-title span { color:var(--amber); }
+    .page-sub { font-size:.88rem; color:var(--muted); margin-bottom:24px; }
+
+    .grid { display:grid; grid-template-columns:340px 1fr; gap:18px; max-width:1100px; margin:0 auto; }
+    @media(max-width:860px){ .grid{grid-template-columns:1fr;} }
+
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:20px 22px; }
+    .card-title { font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:16px; }
+
+    /* Augmentation options */
+    .aug-section { margin-bottom:18px; }
+    .aug-section:last-child { margin-bottom:0; }
+    .aug-header { font-size:.88rem; font-weight:600; margin-bottom:10px; display:flex; align-items:center; gap:8px; }
+    .aug-header .emoji { font-size:1.1rem; }
+
+    .check-group { display:flex; flex-wrap:wrap; gap:8px; }
+    .check-item {
+      display:flex; align-items:center; gap:6px;
+      padding:6px 12px; border-radius:8px; border:1px solid var(--border);
+      background:var(--s2); cursor:pointer; transition:all .15s;
+      font-size:.82rem;
+    }
+    .check-item:hover { border-color:rgba(245,158,11,.3); }
+    .check-item.checked { border-color:var(--amber); background:rgba(245,158,11,.08); }
+    .check-item input { display:none; }
+    .check-dot {
+      width:14px; height:14px; border-radius:4px; border:2px solid var(--muted);
+      transition:all .15s; display:flex; align-items:center; justify-content:center;
+    }
+    .check-item.checked .check-dot { border-color:var(--amber); background:var(--amber); }
+    .check-item.checked .check-dot::after { content:'✓'; font-size:.6rem; color:#000; font-weight:700; }
+
+    .toggle-row { display:flex; align-items:center; gap:12px; }
+    .toggle {
+      position:relative; width:44px; height:24px; border-radius:99px;
+      background:var(--s2); border:1px solid var(--border); cursor:pointer;
+      transition:all .2s; flex-shrink:0;
+    }
+    .toggle.on { background:rgba(245,158,11,.25); border-color:var(--amber); }
+    .toggle::after {
+      content:''; position:absolute; top:2px; left:2px;
+      width:18px; height:18px; border-radius:50%;
+      background:var(--muted); transition:all .2s;
+    }
+    .toggle.on::after { left:22px; background:var(--amber); }
+
+    .btn {
+      width:100%; padding:12px; border:none; border-radius:10px; cursor:pointer;
+      font-family:'Outfit'; font-size:.92rem; font-weight:600; transition:all .2s;
+    }
+    .btn-primary { background:var(--amber); color:#000; }
+    .btn-primary:hover { opacity:.85; }
+    .btn:disabled { opacity:.4; cursor:not-allowed; }
+
+    .msg { font-size:.82rem; margin-top:10px; min-height:18px; text-align:center; }
+    .msg.ok { color:var(--green); }
+    .msg.err { color:var(--red); }
+
+    /* Source clips table */
+    .clip-list { max-height:60vh; overflow-y:auto; }
+    .clip-item {
+      display:flex; align-items:center; gap:10px;
+      padding:8px 12px; border-radius:8px; border-bottom:1px solid var(--border);
+      transition:background .12s; font-size:.82rem;
+    }
+    .clip-item:hover { background:rgba(255,255,255,.02); }
+    .clip-item .filename { flex:1; font-family:var(--mono); font-size:.75rem; color:#94a3b8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .clip-item .dur { color:var(--muted); font-size:.72rem; font-family:var(--mono); }
+    .label-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+    .label-dot.bark { background:var(--green); }
+    .label-dot.notbark { background:var(--red); }
+
+    .stats-row { display:flex; gap:16px; margin-bottom:16px; }
+    .stat { text-align:center; flex:1; }
+    .stat-val { font-size:1.4rem; font-weight:700; }
+    .stat-val.bark { color:var(--green); }
+    .stat-val.notbark { color:var(--red); }
+    .stat-label { font-size:.68rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-top:2px; }
+
+    .estimation {
+      background:var(--s2); border-radius:8px; padding:10px 14px;
+      font-size:.82rem; color:var(--muted); margin-top:12px; line-height:1.6;
+    }
+    .estimation strong { color:var(--text); }
+
+    /* Progress */
+    .progress-bar {
+      height:6px; border-radius:99px; background:var(--s2); overflow:hidden;
+      margin-top:12px;
+    }
+    .progress-fill {
+      height:100%; border-radius:99px; background:linear-gradient(90deg,var(--amber),var(--green));
+      transition:width .3s; width:0%;
+    }
+  </style>
+</head>
+<body>
+
+<script src="/nav.js"></script>
+
+<h1 class="page-title">🔀 Data <span>Augmentation</span></h1>
+<p class="page-sub">Generate training clip variations from labelled data to improve model robustness.</p>
+
+<div class="grid">
+
+  <!-- Sidebar: Controls -->
+  <div style="display:flex;flex-direction:column;gap:18px">
+
+    <div class="card">
+      <div class="card-title">📊 Labelled Clips</div>
+      <div class="stats-row">
+        <div class="stat">
+          <div class="stat-val bark" id="cnt-bark">0</div>
+          <div class="stat-label">Bark</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val notbark" id="cnt-notbark">0</div>
+          <div class="stat-label">Not-Bark</div>
+        </div>
+        <div class="stat">
+          <div class="stat-val" id="cnt-total">0</div>
+          <div class="stat-label">Total</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🎛️ Augmentation Types</div>
+
+      <div class="aug-section">
+        <div class="aug-header"><span class="emoji">🔊</span> Gain Variation</div>
+        <div class="check-group" id="gain-checks">
+          <label class="check-item checked" onclick="this.classList.toggle('checked')">
+            <span class="check-dot"></span> -12 dB
+            <input type="checkbox" value="-12" checked>
+          </label>
+          <label class="check-item checked" onclick="this.classList.toggle('checked')">
+            <span class="check-dot"></span> -6 dB
+            <input type="checkbox" value="-6" checked>
+          </label>
+          <label class="check-item checked" onclick="this.classList.toggle('checked')">
+            <span class="check-dot"></span> +6 dB
+            <input type="checkbox" value="6" checked>
+          </label>
+          <label class="check-item checked" onclick="this.classList.toggle('checked')">
+            <span class="check-dot"></span> +12 dB
+            <input type="checkbox" value="12" checked>
+          </label>
+        </div>
+      </div>
+
+      <div class="aug-section">
+        <div class="aug-header"><span class="emoji">⏩</span> Speed / Pitch</div>
+        <div class="check-group" id="speed-checks">
+          <label class="check-item checked" onclick="this.classList.toggle('checked')">
+            <span class="check-dot"></span> 0.85×
+            <input type="checkbox" value="0.85" checked>
+          </label>
+          <label class="check-item" onclick="this.classList.toggle('checked')">
+            <span class="check-dot"></span> 0.9×
+            <input type="checkbox" value="0.9">
+          </label>
+          <label class="check-item" onclick="this.classList.toggle('checked')">
+            <span class="check-dot"></span> 1.1×
+            <input type="checkbox" value="1.1">
+          </label>
+          <label class="check-item checked" onclick="this.classList.toggle('checked')">
+            <span class="check-dot"></span> 1.15×
+            <input type="checkbox" value="1.15" checked>
+          </label>
+        </div>
+      </div>
+
+      <div class="aug-section">
+        <div class="aug-header"><span class="emoji">🏠</span> Room Reverb</div>
+        <div class="toggle-row">
+          <div class="toggle" id="reverb-toggle" onclick="this.classList.toggle('on')"></div>
+          <span style="font-size:.82rem">Add simulated room echo</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🚀 Generate</div>
+      <div class="estimation" id="estimation">
+        Select augmentation types to see an estimate.
+      </div>
+      <div class="progress-bar" id="progress-wrap" style="display:none">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+      <button class="btn btn-primary" id="gen-btn" onclick="generate()" style="margin-top:12px" disabled>
+        🔀 Generate Augmented Clips
+      </button>
+      <div class="msg" id="gen-msg"></div>
+    </div>
+
+  </div>
+
+  <!-- Main: clip list -->
+  <div class="card">
+    <div class="card-title">📁 Source Clips (Labelled Only)</div>
+    <div class="clip-list" id="clip-list">
+      <div style="color:var(--muted);text-align:center;padding:20px">Loading…</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+let labelledClips = [];
+
+async function loadClips() {
+  try {
+    const events = await fetch('/api/train/clips').then(r => r.json());
+    labelledClips = events.filter(e => e.label !== null && e.label !== undefined && e.clip_path);
+
+    const barks = labelledClips.filter(e => e.label === 1);
+    const notbarks = labelledClips.filter(e => e.label === 0);
+
+    document.getElementById('cnt-bark').textContent = barks.length;
+    document.getElementById('cnt-notbark').textContent = notbarks.length;
+    document.getElementById('cnt-total').textContent = labelledClips.length;
+
+    if (!labelledClips.length) {
+      document.getElementById('clip-list').innerHTML =
+        '<div style="color:var(--muted);text-align:center;padding:20px">No labelled clips yet. Go to <a href="/train" style="color:var(--amber)">Train</a> and label some clips first.</div>';
+      return;
+    }
+
+    document.getElementById('clip-list').innerHTML = labelledClips.map(e => {
+      const fn = (e.clip_path || '').split('/').pop();
+      const dur = e.duration ? e.duration.toFixed(1) + 's' : '';
+      const dotCls = e.label === 1 ? 'bark' : 'notbark';
+      const labelText = e.label === 1 ? '🐕 Bark' : '✗ Not';
+      return `<div class="clip-item">
+        <span class="label-dot ${dotCls}"></span>
+        <span class="filename">${fn}</span>
+        <span class="dur">${dur}</span>
+        <span style="font-size:.72rem">${labelText}</span>
+      </div>`;
+    }).join('');
+
+    updateEstimation();
+    document.getElementById('gen-btn').disabled = labelledClips.length === 0;
+  } catch(e) { console.error(e); }
+}
+
+function getSelectedAugs() {
+  const gains = [...document.querySelectorAll('#gain-checks .check-item.checked input')].map(i => parseFloat(i.value));
+  const speeds = [...document.querySelectorAll('#speed-checks .check-item.checked input')].map(i => parseFloat(i.value));
+  const reverb = document.getElementById('reverb-toggle').classList.contains('on');
+  return { gain: gains, speed: speeds, reverb };
+}
+
+function updateEstimation() {
+  const augs = getSelectedAugs();
+  const n = labelledClips.length;
+  const perClip = augs.gain.length + augs.speed.length + (augs.reverb ? 1 : 0);
+  const total = n * perClip;
+
+  const est = document.getElementById('estimation');
+  if (total === 0) {
+    est.innerHTML = 'Select at least one augmentation type.';
+    document.getElementById('gen-btn').disabled = true;
+  } else {
+    est.innerHTML = `<strong>${n}</strong> source clips × <strong>${perClip}</strong> augmentations = <strong>${total}</strong> new clips`;
+    document.getElementById('gen-btn').disabled = false;
+  }
+}
+
+// Update estimation when toggles change
+document.addEventListener('click', e => {
+  if (e.target.closest('.check-item') || e.target.closest('.toggle')) {
+    setTimeout(updateEstimation, 50);
+  }
+});
+
+async function generate() {
+  const btn = document.getElementById('gen-btn');
+  const msg = document.getElementById('gen-msg');
+  const bar = document.getElementById('progress-wrap');
+  const fill = document.getElementById('progress-fill');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Generating…';
+  msg.textContent = '';
+  bar.style.display = 'block';
+  fill.style.width = '10%';
+
+  const augs = getSelectedAugs();
+  const eventIds = labelledClips.map(e => e.id);
+
+  try {
+    fill.style.width = '30%';
+    const r = await fetch('/api/augment', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ event_ids: eventIds, augmentations: augs }),
+    });
+    fill.style.width = '90%';
+    const result = await r.json();
+
+    if (result.error) {
+      msg.className = 'msg err';
+      msg.textContent = '✗ ' + result.error;
+    } else {
+      msg.className = 'msg ok';
+      msg.textContent = `✓ Generated ${result.count} augmented clips`;
+      fill.style.width = '100%';
+      setTimeout(loadClips, 500);
+    }
+  } catch(e) {
+    msg.className = 'msg err';
+    msg.textContent = '✗ ' + e.message;
+  }
+
+  btn.disabled = false;
+  btn.textContent = '🔀 Generate Augmented Clips';
+  setTimeout(() => { bar.style.display = 'none'; fill.style.width = '0%'; }, 3000);
+}
+
+loadClips();
+</script>
+</body>
+</html>

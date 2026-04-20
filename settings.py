@@ -40,6 +40,17 @@ _DEFAULT = {
     "upload_sftp_password": "",
     "upload_sftp_key_path": "",
     "upload_sftp_dir":      "/upload/woofalytics",
+    # ── MQTT ────────────────────────────────────────────────────────────────
+    "mqtt_enabled":         False,
+    "mqtt_broker":          "",
+    "mqtt_port":            1883,
+    "mqtt_username":        "",
+    "mqtt_password":        "",
+    "mqtt_tls":             False,
+    "mqtt_topic":           "woofalytics/bark",
+    "mqtt_ha_discovery":    False,
+    # ── AI labeling (Google Gemini) ─────────────────────────────────────────
+    "gemini_api_key":       "",
 }
 
 _lock = threading.Lock()
@@ -88,4 +99,8 @@ def get_public() -> dict:
     s_pub["upload_s3_secret"]     = ""
     s_pub["upload_sftp_password_set"] = bool(s_pub.get("upload_sftp_password", ""))
     s_pub["upload_sftp_password"]     = ""
+    s_pub["mqtt_password_set"]        = bool(s_pub.get("mqtt_password", ""))
+    s_pub["mqtt_password"]            = ""
+    s_pub["gemini_api_key_set"]       = bool(s_pub.get("gemini_api_key", ""))
+    s_pub["gemini_api_key"]           = ""
     return s_pub

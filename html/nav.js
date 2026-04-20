@@ -108,6 +108,8 @@
     { href: '/library',   label: 'Library'   },
     { href: '/stream',    label: '📺 Stream'  },
     { href: '/train',     label: '🧠 Train'   },
+    { href: '/augment',   label: '🔀 Augment' },
+    { href: '/mqtt',      label: '📡 MQTT'    },
     { href: '/debug',     label: 'Debug'     },
     { href: '/config',    label: 'Config'    },
     { href: '/rec',       label: 'Record'    },

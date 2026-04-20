@@ -177,6 +177,35 @@
       color:var(--muted); margin-left:6px; vertical-align:middle;
     }
 
+    /* ── Slice controls ── */
+    .slice-row {
+      display:flex; gap:8px; margin-top:10px; align-items:center;
+      padding:8px 10px; border-radius:8px; background:rgba(59,130,246,.06);
+      border:1px solid rgba(59,130,246,.15);
+    }
+    .slice-btn {
+      padding:8px 16px; border-radius:8px; border:1px solid var(--blue);
+      background:rgba(59,130,246,.12); color:var(--blue);
+      font-family:'Outfit'; font-size:.82rem; font-weight:600;
+      cursor:pointer; transition:all .15s; white-space:nowrap;
+    }
+    .slice-btn:hover { background:rgba(59,130,246,.25); }
+    .slice-btn:disabled { opacity:.4; cursor:not-allowed; }
+    .seg-select {
+      background:var(--s2); border:1px solid var(--border); border-radius:6px;
+      color:var(--text); padding:4px 10px; font-family:'Outfit'; font-size:.78rem;
+      outline:none;
+    }
+    .slice-hint {
+      font-size:.72rem; color:var(--muted); flex:1;
+    }
+    .dur-badge {
+      display:inline-block; padding:1px 8px; border-radius:99px;
+      font-size:.68rem; font-family:var(--mono); font-weight:600;
+    }
+    .dur-long  { background:rgba(59,130,246,.12); color:var(--blue); }
+    .dur-short { background:rgba(34,197,94,.12); color:var(--green); }
+
     /* ── Sidebar controls ── */
     .field { display:flex; flex-direction:column; gap:6px; margin-bottom:14px; }
     .field:last-child { margin-bottom:0; }
@@ -283,6 +312,7 @@
         <button class="filter-btn" onclick="setFilter('notbark',this)">Not-Bark ✓</button>
         <button class="select-all-btn" onclick="labelAll(1)">✓ All → Bark</button>
         <button class="select-all-btn" onclick="labelAll(0)" style="color:var(--red)">✗ All → Not-Bark</button>
+        <button class="select-all-btn" onclick="aiLabelAll()" style="color:var(--blue)">🤖 AI Label All</button>
       </div>
 
       <div class="clip-grid" id="clip-grid">
@@ -351,6 +381,22 @@
       </div>
     </div>
 
+    <!-- AI Labeling -->
+    <div class="card">
+      <div class="card-title">🤖 AI-Assisted Labeling</div>
+      <div class="field" style="margin-bottom:10px">
+        <label style="font-size:.78rem;color:var(--muted)">Gemini API Key</label>
+        <div style="display:flex;gap:6px">
+          <input type="password" id="gemini-key" placeholder="Enter API key" style="flex:1;background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:.8rem;outline:none">
+          <button onclick="saveGeminiKey()" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--amber);padding:6px 12px;cursor:pointer;font-size:.78rem;white-space:nowrap">Save</button>
+        </div>
+        <div id="gemini-status" style="font-size:.72rem;color:var(--muted);margin-top:4px"></div>
+      </div>
+      <div style="font-size:.75rem;color:var(--muted);line-height:1.5">
+        Uses Google Gemini to listen to each clip and classify it as bark or not-bark. Saves hours of manual labeling.
+      </div>
+    </div>
+
     <!-- Model info -->
     <div class="card">
       <div class="card-title">🗄️ Model Backups</div>
@@ -382,6 +428,17 @@ async function loadClips() {
     });
     renderGrid();
     updateSummary();
+    // Check Gemini API key status
+    try {
+      const settings = await fetch('/api/settings').then(r => r.json());
+      const st = document.getElementById('gemini-status');
+      const inp = document.getElementById('gemini-key');
+      if (settings.gemini_api_key_set) {
+        if (st) st.textContent = '✓ API key configured';
+        if (st) st.style.color = 'var(--green)';
+        if (inp) inp.placeholder = '(key set — enter new to change)';
+      }
+    } catch(e) {}
   } catch(e) { console.error(e); }
 }
 
@@ -434,7 +491,10 @@ function renderGrid() {
       <div class="clip-row-header">
         <div>
           <span class="clip-ts">${ts}</span>
-          <span style="font-size:.72rem;color:var(--muted);margin-left:8px">${dur}</span>
+          ${e.duration > 10
+            ? `<span class="dur-badge dur-long" style="margin-left:6px">${dur}</span>`
+            : `<span class="dur-badge dur-short" style="margin-left:6px">${dur}</span>`
+          }
         </div>
         <span class="clip-prob" style="color:${probCol}">${prob}</span>
         <div class="label-pills">
@@ -469,6 +529,31 @@ function renderGrid() {
           <button class="lbl-btn notbark ${lbl===0?'chosen':''}"
                   onclick="event.stopPropagation();setLabel(${e.id},0)">
             ✗ Not a Bark<span class="key-hint">N</span>
+          </button>
+        </div>
+        ${e.duration > 10 ? `
+        <div class="slice-row">
+          <button class="slice-btn" id="slice-btn-${e.id}"
+                  onclick="event.stopPropagation();sliceClip(${e.id})">
+            ✂ Slice into segments
+          </button>
+          <select class="seg-select" id="seg-sel-${e.id}" onclick="event.stopPropagation()">
+            <option value="3">3s chunks</option>
+            <option value="5" selected>5s chunks</option>
+            <option value="10">10s chunks</option>
+          </select>
+          <label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:var(--blue);cursor:pointer" onclick="event.stopPropagation()">
+            <input type="checkbox" id="smart-${e.id}" checked style="accent-color:var(--blue)"> Smart
+          </label>
+          <span class="slice-hint">
+            Creates ${Math.ceil((e.duration||60)/5)} shorter clips you can label individually
+          </span>
+        </div>
+        ` : ''}
+        <div style="margin-top:6px">
+          <button class="slice-btn" style="border-color:var(--blue);color:var(--blue);background:rgba(59,130,246,.06);font-size:.75rem;padding:5px 12px;width:auto"
+                  id="ai-btn-${e.id}" onclick="event.stopPropagation();aiLabel(${e.id})">
+            🤖 AI Label
           </button>
         </div>
       </div>
@@ -708,10 +793,41 @@ async function setLabel(id, label) {
   updateSummary();
 }
 
+// ── Clip slicing ──────────────────────────────────────────────────────────────
+async function sliceClip(id) {
+  const segSelect = document.getElementById('seg-sel-' + id);
+  const segSec = segSelect ? parseInt(segSelect.value) : 5;
+  const smartCb = document.getElementById('smart-' + id);
+  const smart = smartCb ? smartCb.checked : true;
+  const btn = document.getElementById('slice-btn-' + id);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Slicing…'; }
+
+  try {
+    const resp = await fetch(`/api/clips/${id}/slice`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ segment_seconds: segSec, smart: smart }),
+    });
+    const result = await resp.json();
+    if (result.error) {
+      alert('Slice failed: ' + result.error);
+      if (btn) { btn.disabled = false; btn.textContent = '✂ Slice into segments'; }
+      return;
+    }
+    activeClipId = null;
+    if (activeAudio) { activeAudio.pause(); activeAudio = null; }
+    await loadClips();
+    const count = result.count || 0;
+    if (btn) btn.textContent = `✓ Created ${count} segments`;
+  } catch (err) {
+    alert('Slice error: ' + err.message);
+    if (btn) { btn.disabled = false; btn.textContent = '✂ Slice into segments'; }
+  }
+}
+
 async function labelAll(label) {
   const visible = getFilteredClips();
   visible.forEach(e => { labels[e.id] = label; });
-  // Batch persist
   for (const e of visible) {
     fetch(`/api/events/${e.id}`, {
       method:'PATCH', headers:{'Content-Type':'application/json'},
@@ -721,6 +837,97 @@ async function labelAll(label) {
   renderGrid();
   updateSummary();
 }
+
+// ── AI labeling ───────────────────────────────────────────────────────────────
+async function saveGeminiKey() {
+  const key = document.getElementById('gemini-key').value.trim();
+  if (!key) return;
+  const st = document.getElementById('gemini-status');
+  try {
+    await fetch('/api/settings', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ gemini_api_key: key }),
+    });
+    st.style.color = 'var(--green)';
+    st.textContent = '✓ Key saved';
+    document.getElementById('gemini-key').value = '';
+    document.getElementById('gemini-key').placeholder = '(key set)';
+    setTimeout(() => { st.textContent = ''; }, 3000);
+  } catch(e) {
+    st.style.color = 'var(--red)';
+    st.textContent = '✗ ' + e.message;
+  }
+}
+
+async function aiLabel(id) {
+  const btn = document.getElementById('ai-btn-' + id);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Analyzing…'; }
+
+  try {
+    const resp = await fetch('/api/ai/label', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ event_id: id }),
+    });
+    const result = await resp.json();
+    if (result.error) {
+      alert('AI label failed: ' + result.error);
+      if (btn) { btn.disabled = false; btn.textContent = '🤖 AI Label'; }
+      return;
+    }
+    // Apply the label
+    labels[id] = result.label;
+    fetch(`/api/events/${id}`, {
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({label: result.label}),
+    });
+    const emoji = result.label === 1 ? '🐕' : '✗';
+    const conf = (result.confidence * 100).toFixed(0);
+    if (btn) btn.textContent = `${emoji} ${result.ai_label} (${conf}%)`;
+    btn.title = result.description || '';
+    renderGrid();
+    updateSummary();
+  } catch(err) {
+    alert('AI label error: ' + err.message);
+    if (btn) { btn.disabled = false; btn.textContent = '🤖 AI Label'; }
+  }
+}
+
+async function aiLabelAll() {
+  const unlabelled = getFilteredClips().filter(e => labels[e.id] === undefined);
+  if (!unlabelled.length) { alert('No unlabelled clips in current filter'); return; }
+  if (!confirm(`AI-label ${unlabelled.length} unlabelled clips? This may take a few minutes.`)) return;
+
+  // Label one by one so user sees progress
+  let done = 0;
+  for (const e of unlabelled) {
+    const btn = document.getElementById('ai-btn-' + e.id);
+    if (btn) { btn.disabled = true; btn.textContent = '⏳…'; }
+    try {
+      const resp = await fetch('/api/ai/label', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ event_id: e.id }),
+      });
+      const result = await resp.json();
+      if (!result.error) {
+        labels[e.id] = result.label;
+        fetch(`/api/events/${e.id}`, {
+          method:'PATCH', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({label: result.label}),
+        });
+        if (btn) {
+          const em = result.label === 1 ? '🐕' : '✗';
+          btn.textContent = `${em} ${result.ai_label}`;
+        }
+      }
+    } catch(err) { /* skip failed */ }
+    done++;
+    document.title = `AI Labeling ${done}/${unlabelled.length}…`;
+  }
+  document.title = 'Woofalytics — Train';
+  renderGrid();
+  updateSummary();
+}
+
 
 function updateSummary() {
   const nBark    = Object.values(labels).filter(v=>v===1).length;

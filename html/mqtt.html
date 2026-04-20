@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Woofalytics — MQTT</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #07080f; --surface: #0f1120; --s2: #161828;
+      --border: rgba(255,255,255,0.07); --amber: #f59e0b;
+      --green: #22c55e; --red: #ef4444; --blue: #3b82f6;
+      --text: #e2e8f0; --muted: #64748b; --r: 14px;
+      --mono: 'JetBrains Mono', monospace;
+    }
+    body { font-family:'Outfit',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; padding:24px; }
+
+    .page-title { font-size:1.6rem; font-weight:700; margin-bottom:24px; }
+    .page-title span { color:var(--amber); }
+
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; max-width:1000px; margin:0 auto; }
+    @media(max-width:860px){ .grid{grid-template-columns:1fr;} }
+    .span2 { grid-column:span 2; }
+    @media(max-width:860px){ .span2{grid-column:span 1;} }
+
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:20px 22px; }
+    .card-title { font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:16px; }
+
+    .field { display:flex; flex-direction:column; gap:6px; margin-bottom:14px; }
+    .field:last-child { margin-bottom:0; }
+    .field label { font-size:.82rem; color:var(--muted); font-weight:500; }
+    .field-hint { font-size:.72rem; color:var(--muted); }
+    input[type=text], input[type=password], input[type=number], select {
+      background:var(--s2); border:1px solid var(--border); border-radius:8px;
+      color:var(--text); padding:8px 12px; font-family:'Outfit'; font-size:.88rem;
+      outline:none; width:100%;
+    }
+    input:focus, select:focus { border-color:var(--amber); }
+
+    .toggle-row { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+    .toggle-label { font-size:.88rem; }
+    .toggle {
+      position:relative; width:44px; height:24px; border-radius:99px;
+      background:var(--s2); border:1px solid var(--border); cursor:pointer;
+      transition:all .2s; flex-shrink:0;
+    }
+    .toggle.on { background:rgba(34,197,94,.25); border-color:var(--green); }
+    .toggle::after {
+      content:''; position:absolute; top:2px; left:2px;
+      width:18px; height:18px; border-radius:50%;
+      background:var(--muted); transition:all .2s;
+    }
+    .toggle.on::after { left:22px; background:var(--green); }
+
+    .btn {
+      width:100%; padding:10px; border:none; border-radius:10px; cursor:pointer;
+      font-family:'Outfit'; font-size:.9rem; font-weight:600; transition:opacity .2s;
+    }
+    .btn-primary { background:var(--amber); color:#000; }
+    .btn-primary:hover { opacity:.85; }
+    .btn-test { background:var(--s2); color:var(--blue); border:1px solid var(--blue); margin-top:8px; }
+    .btn-test:hover { background:rgba(59,130,246,.12); }
+    .btn:disabled { opacity:.4; cursor:not-allowed; }
+
+    .msg { font-size:.8rem; margin-top:8px; min-height:18px; text-align:center; }
+    .msg.ok { color:var(--green); }
+    .msg.err { color:var(--red); }
+
+    .status-card { display:flex; align-items:center; gap:12px; }
+    .status-dot {
+      width:12px; height:12px; border-radius:50%; flex-shrink:0;
+      transition:background .3s;
+    }
+    .status-dot.connected { background:var(--green); box-shadow:0 0 8px rgba(34,197,94,.5); }
+    .status-dot.disconnected { background:var(--red); }
+    .status-dot.disabled { background:var(--muted); }
+    .status-text { font-size:.92rem; }
+
+    .key-row { display:flex; gap:8px; }
+    .key-row input { flex:1; }
+    .eye-btn {
+      background:var(--s2); border:1px solid var(--border); border-radius:8px;
+      color:var(--muted); padding:8px 12px; cursor:pointer; flex-shrink:0;
+      transition:all .2s;
+    }
+    .eye-btn:hover { color:var(--amber); border-color:var(--amber); }
+
+    .topic-preview {
+      background:var(--s2); border-radius:8px; padding:12px 16px;
+      font-family:var(--mono); font-size:.78rem; color:#94a3b8;
+      line-height:1.7; margin-top:12px; white-space:pre;
+    }
+    .topic-preview .key { color:var(--blue); }
+    .topic-preview .val { color:#86efac; }
+  </style>
+</head>
+<body>
+
+<script src="/nav.js"></script>
+
+<h1 class="page-title">📡 <span>MQTT</span> Integration</h1>
+
+<div class="grid">
+
+  <!-- Status -->
+  <div class="card">
+    <div class="card-title">Connection Status</div>
+    <div class="status-card">
+      <div class="status-dot disabled" id="status-dot"></div>
+      <span class="status-text" id="status-text">Loading…</span>
+    </div>
+    <div style="margin-top:12px;font-size:.78rem;color:var(--muted)" id="status-detail"></div>
+  </div>
+
+  <!-- Enable toggle -->
+  <div class="card">
+    <div class="card-title">MQTT Publishing</div>
+    <div class="toggle-row">
+      <div class="toggle" id="mqtt-toggle" onclick="toggleMQTT()"></div>
+      <span class="toggle-label">Publish bark events via MQTT</span>
+    </div>
+    <div class="field-hint">When enabled, every confirmed bark detection is published as a JSON message to the configured broker and topic.</div>
+  </div>
+
+  <!-- Broker config -->
+  <div class="card">
+    <div class="card-title">🔌 Broker</div>
+    <div class="field">
+      <label>Host</label>
+      <input type="text" id="mqtt-broker" placeholder="e.g. mqtt.example.com or 192.168.1.100">
+    </div>
+    <div class="field">
+      <label>Port</label>
+      <input type="number" id="mqtt-port" value="1883" min="1" max="65535">
+    </div>
+    <div class="field">
+      <label>Username (optional)</label>
+      <input type="text" id="mqtt-user" placeholder="Leave empty for anonymous">
+    </div>
+    <div class="field">
+      <label>Password (optional)</label>
+      <div class="key-row">
+        <input type="password" id="mqtt-pass" placeholder="Leave empty for anonymous">
+        <button class="eye-btn" onclick="togglePass()">👁</button>
+      </div>
+    </div>
+    <div class="toggle-row" style="margin-top:8px">
+      <div class="toggle" id="tls-toggle" onclick="this.classList.toggle('on')"></div>
+      <span class="toggle-label" style="font-size:.82rem">Use TLS/SSL</span>
+    </div>
+    <button class="btn btn-test" onclick="testConnection()">🔍 Test Connection</button>
+    <div class="msg" id="test-msg"></div>
+  </div>
+
+  <!-- Topic config -->
+  <div class="card">
+    <div class="card-title">📬 Topic & Format</div>
+    <div class="field">
+      <label>Base Topic</label>
+      <input type="text" id="mqtt-topic" value="woofalytics/bark">
+      <div class="field-hint">Bark events published here. Availability at <code style="color:var(--amber)">{topic}/availability</code></div>
+    </div>
+    <div class="toggle-row" style="margin-top:12px">
+      <div class="toggle" id="ha-toggle" onclick="this.classList.toggle('on')"></div>
+      <span class="toggle-label" style="font-size:.82rem">Home Assistant Auto-Discovery</span>
+    </div>
+    <div class="field-hint">Publishes HA MQTT discovery config so the bark sensor appears automatically in Home Assistant.</div>
+
+    <div class="topic-preview" id="msg-preview">
+<span class="key">"event"</span>: <span class="val">"bark"</span>,
+<span class="key">"probability"</span>: <span class="val">0.95</span>,
+<span class="key">"peak_dbfs"</span>: <span class="val">-12.5</span>,
+<span class="key">"doa"</span>: <span class="val">45</span>,
+<span class="key">"timestamp"</span>: <span class="val">"2026-04-20T..."</span>
+    </div>
+  </div>
+
+  <!-- Save -->
+  <div class="card span2">
+    <button class="btn btn-primary" onclick="saveAll()">💾 Save & Apply</button>
+    <div class="msg" id="save-msg"></div>
+  </div>
+
+</div>
+
+<script>
+let currentSettings = {};
+
+async function loadStatus() {
+  try {
+    const [status, settings] = await Promise.all([
+      fetch('/api/mqtt/status').then(r => r.json()),
+      fetch('/api/settings').then(r => r.json()),
+    ]);
+    currentSettings = settings;
+
+    // Status dot
+    const dot = document.getElementById('status-dot');
+    const txt = document.getElementById('status-text');
+    const detail = document.getElementById('status-detail');
+
+    if (!status.available) {
+      dot.className = 'status-dot disabled';
+      txt.textContent = 'paho-mqtt not installed';
+    } else if (!status.enabled) {
+      dot.className = 'status-dot disabled';
+      txt.textContent = 'Disabled';
+    } else if (status.connected) {
+      dot.className = 'status-dot connected';
+      txt.textContent = `Connected to ${status.broker}`;
+    } else {
+      dot.className = 'status-dot disconnected';
+      txt.textContent = 'Disconnected';
+    }
+    detail.textContent = status.last_error ? `Last error: ${status.last_error}` : '';
+
+    // Fill form
+    document.getElementById('mqtt-toggle').className = 'toggle' + (settings.mqtt_enabled ? ' on' : '');
+    document.getElementById('mqtt-broker').value = settings.mqtt_broker || '';
+    document.getElementById('mqtt-port').value = settings.mqtt_port || 1883;
+    document.getElementById('mqtt-user').value = settings.mqtt_username || '';
+    document.getElementById('mqtt-topic').value = settings.mqtt_topic || 'woofalytics/bark';
+    if (settings.mqtt_tls) document.getElementById('tls-toggle').classList.add('on');
+    if (settings.mqtt_ha_discovery) document.getElementById('ha-toggle').classList.add('on');
+    if (settings.mqtt_password_set) {
+      document.getElementById('mqtt-pass').placeholder = '(set — enter new to change)';
+    }
+  } catch(e) { console.error(e); }
+}
+
+function toggleMQTT() {
+  document.getElementById('mqtt-toggle').classList.toggle('on');
+}
+function togglePass() {
+  const inp = document.getElementById('mqtt-pass');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+async function testConnection() {
+  const msg = document.getElementById('test-msg');
+  msg.className = 'msg'; msg.textContent = 'Testing…';
+
+  const payload = {
+    mqtt_broker: document.getElementById('mqtt-broker').value,
+    mqtt_port: parseInt(document.getElementById('mqtt-port').value),
+    mqtt_username: document.getElementById('mqtt-user').value,
+    mqtt_password: document.getElementById('mqtt-pass').value || currentSettings.mqtt_password || '',
+    mqtt_tls: document.getElementById('tls-toggle').classList.contains('on'),
+  };
+
+  try {
+    const r = await fetch('/api/mqtt/test', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const result = await r.json();
+    if (result.ok) {
+      msg.className = 'msg ok'; msg.textContent = '✓ Connection successful!';
+    } else {
+      msg.className = 'msg err'; msg.textContent = '✗ ' + (result.error || 'Failed');
+    }
+  } catch(e) {
+    msg.className = 'msg err'; msg.textContent = '✗ ' + e.message;
+  }
+}
+
+async function saveAll() {
+  const msg = document.getElementById('save-msg');
+  msg.className = 'msg'; msg.textContent = 'Saving…';
+
+  const payload = {
+    mqtt_enabled: document.getElementById('mqtt-toggle').classList.contains('on'),
+    mqtt_broker: document.getElementById('mqtt-broker').value,
+    mqtt_port: parseInt(document.getElementById('mqtt-port').value),
+    mqtt_username: document.getElementById('mqtt-user').value,
+    mqtt_tls: document.getElementById('tls-toggle').classList.contains('on'),
+    mqtt_topic: document.getElementById('mqtt-topic').value,
+    mqtt_ha_discovery: document.getElementById('ha-toggle').classList.contains('on'),
+  };
+  const pass = document.getElementById('mqtt-pass').value;
+  if (pass) payload.mqtt_password = pass;
+
+  try {
+    const r = await fetch('/api/mqtt/configure', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const result = await r.json();
+    if (result.ok) {
+      msg.className = 'msg ok'; msg.textContent = '✓ Saved & applied';
+      document.getElementById('mqtt-pass').value = '';
+      setTimeout(loadStatus, 1000);
+    } else {
+      msg.className = 'msg err'; msg.textContent = '✗ ' + (result.error || 'Failed');
+    }
+  } catch(e) {
+    msg.className = 'msg err'; msg.textContent = '✗ ' + e.message;
+  }
+  setTimeout(() => { msg.textContent = ''; }, 4000);
+}
+
+loadStatus();
+setInterval(loadStatus, 10000);
+</script>
+</body>
+</html>

@@ -36,7 +36,9 @@ RUN pip3 install --no-cache-dir --timeout 300 --retries 5 \
     pyargus==1.1.post1 \
     pyaudio==0.2.13 \
     Requests==2.31.0 \
-    Pillow>=9.0.0
+    Pillow>=9.0.0 \
+    paho-mqtt>=2.0.0 \
+    google-genai>=1.0.0
 
 # Fonts for the video overlay text — separate layer to keep cache intact
 RUN apt-get update && apt-get install -y --no-install-recommends \

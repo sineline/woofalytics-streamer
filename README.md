@@ -87,6 +87,33 @@ An alternative to live streaming: automatically upload bark clips to cloud stora
 - Sticky glassmorphism bar with active-link detection
 - Live bark status pill (polling `/api/bark`)
 
+### 🧠 Training & Labeling Pipeline (`/train`)
+- **V2 CNN bark detector** — 1D CNN with batch normalization, 500ms context window (vs 60ms in V1)
+- **CMVN normalization** — volume-independent classification (catches distant barks, ignores loud non-bark sounds)
+- **Smart clip slicing** — uses `ffmpeg silencedetect` to skip silent sections when splitting long clips into short labelling segments
+- **Waveform player** — interactive canvas-based player with click-to-seek, speed controls, and keyboard shortcuts
+- **Per-clip labeling** — Bark / Not-Bark buttons with keyboard shortcuts (B/N)
+
+### 🤖 AI-Assisted Labeling (Google Gemini)
+- Integrates with **Gemini 2.0 Flash** to auto-classify audio clips as bark or not-bark
+- Per-clip "AI Label" button and bulk "AI Label All" for rapid labeling
+- Returns confidence scores and audio descriptions
+- API key stored securely in `settings.json` (masked in UI)
+
+### 📡 MQTT Integration (`/mqtt`)
+- Publish bark events as JSON to any MQTT broker
+- Configurable broker, port, username/password, TLS
+- Home Assistant auto-discovery support (`binary_sensor` with `device_class: sound`)
+- Connection test button with live status indicator
+- Last Will and Testament (LWT) for online/offline availability
+
+### 🔀 Data Augmentation (`/augment`)
+- Generate training clip variations from labelled data
+- **Gain variation**: ±6 dB, ±12 dB
+- **Speed/pitch shift**: 0.85×, 0.9×, 1.1×, 1.15×
+- **Reverb simulation**: room echo via convolution
+- Augmented clips inherit the source label and integrate directly with the training pipeline
+
 ### 💾 Persistent settings
 `settings.py` writes a `./clips/settings.json` file that survives container restarts and takes precedence over `docker-compose.yml` env vars for runtime-configurable fields.
 
@@ -173,6 +200,9 @@ All of these can also be set at runtime via the **Config page** and are persiste
 | `/analytics` | Per-dog noise analytics and timeline |
 | `/library` | Browse, play, tag, and delete recorded clips |
 | `/stream` | YouTube streaming controls + archive upload config |
+| `/train` | Label clips, train model, AI-assisted labeling, smart slicing |
+| `/augment` | Generate training data variations (gain, speed, reverb) |
+| `/mqtt` | MQTT broker configuration and event publishing |
 | `/debug` | System telemetry, live log, audio device health |
 | `/config` | Device selectors, stream key, runtime tuning |
 | `/rec` | Manual clip recording trigger |
@@ -199,22 +229,46 @@ All of these can also be set at runtime via the **Config page** and are persiste
 | GET | `/api/devices` | List PyAudio input devices |
 | GET | `/api/devices/video` | List `/dev/video*` devices |
 | GET | `/api/debug` | Live system telemetry |
+| GET | `/api/train` | Training job status |
+| GET | `/api/train/clips` | All clips available for labeling |
+| POST | `/api/train` | Start a training run |
+| POST | `/api/clips/<id>/slice` | Slice a clip into segments `{ "smart": true }` |
+| POST | `/api/ai/label` | AI-classify a single clip `{ "event_id": 123 }` |
+| POST | `/api/ai/label-batch` | AI-classify multiple clips |
+| POST | `/api/augment` | Generate augmented clips |
+| GET | `/api/mqtt/status` | MQTT connection status |
+| POST | `/api/mqtt/test` | Test MQTT broker connection |
+| POST | `/api/mqtt/configure` | Save & apply MQTT settings |
 
 ---
 
 ## Model
 
-Unchanged from the original. A compact feed-forward network:
+Two model versions are supported:
 
+### V1 (Legacy)
 ```
-Input: 80-dim log-Mel filterbank (60 ms window, 8 kHz target SR after mixing down)
-→ FC(2400 → 128, ReLU)
-→ FC(128 → 64, ReLU)
-→ FC(64 → 1, Sigmoid)
+Input: 80-dim log-Mel filterbank (60 ms window)
+→ FC(480 → 64, ReLU)
+→ FC(64 → 32, ReLU)
+→ FC(32 → 1, Sigmoid)
 Output: P(barking)
 ```
 
-See the original [`notebooks/woofalytics-model.ipynb`](notebooks/woofalytics-model.ipynb) for training details.
+### V2 (CNN — current)
+```
+Input: [50, 80] log-Mel filterbank (500 ms window, CMVN normalized)
+→ Conv1d(80→64, k=5) + BatchNorm + ReLU + MaxPool
+→ Conv1d(64→128, k=3) + BatchNorm + ReLU + MaxPool
+→ Conv1d(128→128, k=3) + BatchNorm + ReLU + AdaptiveAvgPool
+→ FC(128→64, ReLU + Dropout)
+→ FC(64→1, Sigmoid)
+Output: P(barking)
+```
+
+**Key difference:** V2 uses CMVN (per-window mean/variance normalization) so it classifies by spectral shape rather than absolute volume. This catches distant barks and ignores nearby loud non-bark sounds.
+
+The model version is auto-detected at startup. Train via the `/train` page.
 
 ---
 

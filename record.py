@@ -64,11 +64,24 @@ class Woofalytics:
         self._model.eval()
         self._logger.debug(f"Model loaded as: {self._model}")
 
+        # Detect model version by probing input shape
+        self._model_version = self._detect_model_version()
+        self._logger.info(f"Model version: V{self._model_version}")
+
         # Pre-build the resampler once (avoids recreating it on every inference call)
         self._resampler = T.Resample(self._fs, self._model_sample_rate, dtype=torch.float32)
 
-        self._model_window_size = 6
-        self._model_window_overlap = 3
+        if self._model_version == 2:
+            self._model_window_size = 50
+            self._model_window_overlap = 25
+            # Need ~550ms of 16kHz audio (after resample) to produce 50 fbank frames
+            # At 44100Hz with 441 chunk: each chunk is 10ms, need ~55 chunks
+            self._infer_chunk_count = 55
+        else:
+            self._model_window_size = 6
+            self._model_window_overlap = 3
+            self._infer_chunk_count = 8
+
         self._model_last_pred = {
             "datetime": datetime.datetime.now().isoformat(),
             "bark_probability": [],
@@ -238,9 +251,7 @@ class Woofalytics:
             # infer:
             infer_buffer.append(data)
 
-            if (
-                len(infer_buffer) >= 8
-            ):  # each `data` is 0.01 seconds (441 samples, sampling rate 44100), we need 60ms (0.06 seconds) for a single window
+            if len(infer_buffer) >= self._infer_chunk_count:
                 self.infer_chunk(infer_buffer.copy())
                 infer_buffer = []
 
@@ -346,6 +357,24 @@ class Woofalytics:
         t = threading.Thread(target=self.infer_worker, args=[frames])
         t.start()
 
+    def _detect_model_version(self):
+        """Probe the loaded JIT model to determine if it's V1 (MLP) or V2 (CNN)."""
+        try:
+            test_v2 = torch.zeros(1, 50, 80)
+            with torch.no_grad():
+                self._model(test_v2)
+            return 2
+        except Exception:
+            pass
+        try:
+            test_v1 = torch.zeros(1, 480)
+            with torch.no_grad():
+                self._model(test_v1)
+            return 1
+        except Exception:
+            self._logger.warning("Could not determine model version, defaulting to V1")
+            return 1
+
     def infer_worker(self, frames):
         audio_array = np.copy(np.frombuffer(b"".join(frames), dtype=np.int16))
         del frames
@@ -379,14 +408,30 @@ class Woofalytics:
             frame_shift=10,
             waveform=resampled_waveform,
         )
-        mel_spectrogram = mel_spectrogram.flatten().unsqueeze(0)
 
-        if mel_spectrogram.size()[1] != 480:
-            self._logger.error(f"Wrong size for LMEL features: {mel_spectrogram.size()}")
-            return
+        if self._model_version == 2:
+            # V2 CNN: needs [1, 50, 80] with CMVN normalization
+            n_frames = mel_spectrogram.shape[0]
+            if n_frames < 50:
+                # Pad with zeros if we don't have enough frames
+                pad = torch.zeros(50 - n_frames, 80)
+                mel_spectrogram = torch.cat([mel_spectrogram, pad], dim=0)
+            mel_spectrogram = mel_spectrogram[:50]  # take first 50 frames
+            # CMVN: zero-mean, unit-variance per mel bin
+            mean = mel_spectrogram.mean(dim=0, keepdim=True)
+            std  = mel_spectrogram.std(dim=0, keepdim=True).clamp(min=1e-6)
+            mel_spectrogram = (mel_spectrogram - mean) / std
+            model_input = mel_spectrogram.unsqueeze(0)  # [1, 50, 80]
+        else:
+            # V1 MLP: needs [1, 480] flattened
+            mel_spectrogram = mel_spectrogram.flatten().unsqueeze(0)
+            if mel_spectrogram.size()[1] != 480:
+                self._logger.error(f"Wrong size for LMEL features: {mel_spectrogram.size()}")
+                return
+            model_input = mel_spectrogram
 
         with torch.no_grad():
-            pred = self._model(mel_spectrogram).detach().item()
+            pred = self._model(model_input).detach().item()
 
         with self._pred_lock:
             if "bark_probability" not in self._model_last_pred:
@@ -445,6 +490,19 @@ class Woofalytics:
                         "avg_dbfs": avg_dbfs, "doa": float((doa1 + doa2 + doa3) / 3),
                     }
                     self.store_clip()
+
+                    # Publish MQTT event
+                    try:
+                        import mqtt_manager
+                        mqtt_manager.get_manager().publish_bark({
+                            "bark_prob": pred,
+                            "peak_dbfs": peak_dbfs,
+                            "avg_dbfs": avg_dbfs,
+                            "doa": float((doa1 + doa2 + doa3) / 3),
+                            "timestamp": datetime.datetime.now().isoformat(),
+                        })
+                    except Exception:
+                        pass  # MQTT failures should never break detection
 
                 if self.ef.fire():
                     self.ifttt_event()

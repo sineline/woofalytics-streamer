@@ -1,13 +1,20 @@
 """
 trainer.py — In-process model fine-tuning from archived bark clips.
 
-Architecture (must match the original notebook):
+Architecture V2 (1D CNN — replaces original MLP):
+  WoofClassifierV2(input_shape=[1, 50, 80])
+  Conv1d(80→32, k=5) + BN + ReLU + MaxPool(2)
+  Conv1d(32→64, k=3) + BN + ReLU + MaxPool(2)
+  Conv1d(64→64, k=3) + BN + ReLU + AdaptivePool(4)
+  Flatten → FC(256→64, ReLU, Dropout) → FC(64→1, Sigmoid)
+
+Feature pipeline:
+  torchaudio.compliance.kaldi.fbank(num_mel_bins=80, frame_length=25, frame_shift=10)
+  → 50-frame windows (500ms) → CMVN → [1, 50, 80]
+
+Legacy V1 architecture (kept for backward compatibility):
   WoofClassifier(input_size=480)
   FC(480→64, ReLU) → FC(64→32, ReLU) → FC(32→1, Sigmoid)
-
-Feature pipeline (identical to record.py inference):
-  torchaudio.compliance.kaldi.fbank(num_mel_bins=80, frame_length=25, frame_shift=10)
-  → 6-frame windows → flatten → [1, 480]
 
 Modes:
   - fine_tune  (default): load existing model weights, fine-tune on new data
@@ -20,11 +27,13 @@ A timestamped backup is made before any model file is overwritten.
 import collections
 import logging
 import os
+import random
 import shutil
 import threading
 import time
 from typing import List, Tuple, Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -36,14 +45,75 @@ _logger = logging.getLogger("Trainer")
 MODEL_PATH   = "./models/traced_model.pt"
 BACKUP_DIR   = "./clips/model_backups"
 SAMPLE_RATE  = 16_000
-WIN_FRAMES   = 6       # fbank frames per window
-INPUT_SIZE   = 480     # 80 mel bins × 6 frames
+
+# ── V2 constants ──────────────────────────────────────────────────────────────
+WIN_FRAMES_V2 = 50     # 50 fbank frames = 500ms context
+NUM_MEL_BINS  = 80
+INPUT_SIZE_V2 = WIN_FRAMES_V2 * NUM_MEL_BINS  # 4000
+
+# ── V1 constants (legacy) ────────────────────────────────────────────────────
+WIN_FRAMES_V1 = 6
+INPUT_SIZE_V1 = 480
 
 
-# ── Model definition (mirrors notebook WoofClassifier) ───────────────────────
+# ── CMVN (cepstral mean & variance normalization) ────────────────────────────
+
+def apply_cmvn(fbank: torch.Tensor) -> torch.Tensor:
+    """Per-utterance CMVN: zero-mean, unit-variance per mel bin.
+
+    Input:  [T, 80]  (time × mel bins)
+    Output: [T, 80]  normalized
+    """
+    mean = fbank.mean(dim=0, keepdim=True)
+    std  = fbank.std(dim=0, keepdim=True).clamp(min=1e-6)
+    return (fbank - mean) / std
+
+
+# ── V2 Model (1D CNN) ────────────────────────────────────────────────────────
+
+class WoofClassifierV2(nn.Module):
+    """Bark classifier using 1D convolutions over mel-spectrogram frames.
+
+    Input shape: [batch, 50, 80]  (time × mel bins)
+    The convolutions operate over the time axis with mel bins as channels.
+    """
+    def __init__(self):
+        super().__init__()
+        # Transpose input to [batch, 80, 50] for Conv1d (channels=mel, length=time)
+        self.conv1 = nn.Conv1d(NUM_MEL_BINS, 32, kernel_size=5, padding=2)
+        self.bn1   = nn.BatchNorm1d(32)
+        self.pool1 = nn.MaxPool1d(2)  # → [batch, 32, 25]
+
+        self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
+        self.bn2   = nn.BatchNorm1d(64)
+        self.pool2 = nn.MaxPool1d(2)  # → [batch, 64, 12]
+
+        self.conv3 = nn.Conv1d(64, 64, kernel_size=3, padding=1)
+        self.bn3   = nn.BatchNorm1d(64)
+        self.apool = nn.AdaptiveAvgPool1d(4)  # → [batch, 64, 4]
+
+        self.fc1 = nn.Linear(64 * 4, 64)
+        self.drop = nn.Dropout(0.3)
+        self.output_layer = nn.Linear(64, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [batch, 50, 80] → transpose to [batch, 80, 50]
+        x = x.transpose(1, 2)
+
+        x = self.pool1(F.relu(self.bn1(self.conv1(x))))
+        x = self.pool2(F.relu(self.bn2(self.conv2(x))))
+        x = self.apool(F.relu(self.bn3(self.conv3(x))))
+
+        x = x.flatten(1)  # [batch, 256]
+        x = F.relu(self.fc1(x))
+        x = self.drop(x)
+        return torch.sigmoid(self.output_layer(x))
+
+
+# ── V1 Model (legacy MLP — kept for backward compat) ─────────────────────────
 
 class WoofClassifier(nn.Module):
-    def __init__(self, input_size: int = INPUT_SIZE):
+    def __init__(self, input_size: int = INPUT_SIZE_V1):
         super().__init__()
         self.fc1 = nn.Linear(input_size, 64)
         self.fc2 = nn.Linear(64, 32)
@@ -55,7 +125,7 @@ class WoofClassifier(nn.Module):
         return torch.sigmoid(self.output_layer(x))
 
 
-# ── Feature extraction (identical to record.py inference path) ───────────────
+# ── Feature extraction ───────────────────────────────────────────────────────
 
 def _load_clip(path: str) -> Optional[torch.Tensor]:
     """Load audio clip → mono float32 waveform at SAMPLE_RATE."""
@@ -72,44 +142,105 @@ def _load_clip(path: str) -> Optional[torch.Tensor]:
         return None
 
 
-def _extract_windows(waveform: torch.Tensor) -> List[torch.Tensor]:
-    """Extract all 6-frame fbank windows from a waveform → list of [1,480] tensors."""
+def _extract_windows_v2(
+    waveform: torch.Tensor,
+    augment: bool = False,
+) -> List[torch.Tensor]:
+    """Extract 50-frame (500ms) fbank windows with CMVN.
+
+    Returns list of [1, 50, 80] tensors, ready for WoofClassifierV2.
+    """
+    if augment:
+        # Gain augmentation: random ±12 dB
+        gain_db = random.uniform(-12, 12)
+        gain_factor = 10 ** (gain_db / 20)
+        waveform = waveform * gain_factor
+
     try:
         fbank = torchaudio.compliance.kaldi.fbank(
             waveform=waveform,
-            num_mel_bins=80,
+            num_mel_bins=NUM_MEL_BINS,
             frame_length=25,
             frame_shift=10,
-        )  # shape: [T, 80]
+        )  # [T, 80]
+    except Exception as exc:
+        _logger.warning(f"fbank failed: {exc}")
+        return []
+
+    # Apply CMVN
+    fbank = apply_cmvn(fbank)
+
+    T_frames = fbank.shape[0]
+    windows = []
+    step = WIN_FRAMES_V2 // 2  # 50% overlap → step=25 frames (250ms)
+
+    for start in range(0, T_frames - WIN_FRAMES_V2 + 1, step):
+        w = fbank[start:start + WIN_FRAMES_V2]  # [50, 80]
+        windows.append(w.unsqueeze(0))  # [1, 50, 80]
+
+    return windows
+
+
+def _extract_windows_v1(waveform: torch.Tensor) -> List[torch.Tensor]:
+    """Legacy V1 extraction: 6-frame windows → [1, 480] flat vectors."""
+    try:
+        fbank = torchaudio.compliance.kaldi.fbank(
+            waveform=waveform,
+            num_mel_bins=NUM_MEL_BINS,
+            frame_length=25,
+            frame_shift=10,
+        )
     except Exception as exc:
         _logger.warning(f"fbank failed: {exc}")
         return []
 
     T_frames = fbank.shape[0]
     windows = []
-    step = WIN_FRAMES // 2  # 50% overlap
-    for start in range(0, T_frames - WIN_FRAMES + 1, step):
-        w = fbank[start:start + WIN_FRAMES].flatten().unsqueeze(0)  # [1, 480]
-        if w.shape[1] == INPUT_SIZE:
+    step = WIN_FRAMES_V1 // 2
+    for start in range(0, T_frames - WIN_FRAMES_V1 + 1, step):
+        w = fbank[start:start + WIN_FRAMES_V1].flatten().unsqueeze(0)  # [1, 480]
+        if w.shape[1] == INPUT_SIZE_V1:
             windows.append(w)
     return windows
 
 
 def build_dataset(
-    clips: List[dict],  # list of {"path": str, "label": int}  label 1=bark 0=not-bark
+    clips: List[dict],
+    model_version: int = 2,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Build X [N,480] and y [N,1] tensors from a list of labelled clips."""
+    """Build X and y tensors from labelled clips.
+
+    V2: X is [N, 50, 80], y is [N, 1]
+    V1: X is [N, 480],    y is [N, 1]
+
+    For V2 training, each clip is processed twice (original + augmented)
+    to increase dataset size and gain-invariance.
+    """
     X, y = [], []
     for item in clips:
         waveform = _load_clip(item["path"])
         if waveform is None:
             continue
         label = float(item["label"])
-        for w in _extract_windows(waveform):
-            X.append(w)
-            y.append(torch.tensor([[label]], dtype=torch.float32))
+
+        if model_version == 2:
+            # Original
+            for w in _extract_windows_v2(waveform, augment=False):
+                X.append(w)
+                y.append(torch.tensor([[label]], dtype=torch.float32))
+            # Augmented copy (random gain)
+            for w in _extract_windows_v2(waveform, augment=True):
+                X.append(w)
+                y.append(torch.tensor([[label]], dtype=torch.float32))
+        else:
+            for w in _extract_windows_v1(waveform):
+                X.append(w)
+                y.append(torch.tensor([[label]], dtype=torch.float32))
+
     if not X:
-        return torch.empty(0, INPUT_SIZE), torch.empty(0, 1)
+        if model_version == 2:
+            return torch.empty(0, WIN_FRAMES_V2, NUM_MEL_BINS), torch.empty(0, 1)
+        return torch.empty(0, INPUT_SIZE_V1), torch.empty(0, 1)
     return torch.cat(X, dim=0), torch.cat(y, dim=0)
 
 
@@ -185,8 +316,9 @@ class TrainingJob:
 
     def _run(self, clips, mode, epochs, lr, val_split):
         try:
-            self._set(message="Building feature dataset…")
-            X, y = build_dataset(clips)
+            # ── Always train V2 (CNN) ────────────────────────────────────
+            self._set(message="Building V2 feature dataset (500ms windows + CMVN)…")
+            X, y = build_dataset(clips, model_version=2)
             n = X.shape[0]
             if n < 10:
                 self._set(state="error", message=f"Too few usable windows ({n}). Need ≥10.")
@@ -199,27 +331,29 @@ class TrainingJob:
             tr_idx  = perm[n_val:]
             X_tr, y_tr = X[tr_idx], y[tr_idx]
             X_val, y_val = X[val_idx], y[val_idx]
-            self._set(message=f"Dataset ready: {len(tr_idx)} train / {n_val} val windows")
+            self._set(message=f"Dataset ready: {len(tr_idx)} train / {n_val} val windows (V2 CNN)")
 
             # ── Load / init model ──────────────────────────────────────────
-            model = WoofClassifier()
-            if mode == "fine_tune":
+            model = WoofClassifierV2()
+            if mode == "fine_tune" and os.path.isfile(MODEL_PATH):
                 try:
-                    # Load weights from traced model via scripted copy
                     jit_model = torch.jit.load(MODEL_PATH)
-                    # Extract state dict from JIT model
-                    sd = {k: v for k, v in jit_model.named_parameters()}
-                    model.fc1.weight.data          = sd["fc1.weight"]
-                    model.fc1.bias.data            = sd["fc1.bias"]
-                    model.fc2.weight.data          = sd["fc2.weight"]
-                    model.fc2.bias.data            = sd["fc2.bias"]
-                    model.output_layer.weight.data = sd["output_layer.weight"]
-                    model.output_layer.bias.data   = sd["output_layer.bias"]
-                    self._set(message="Loaded existing model weights for fine-tuning")
+                    # Check if it's a V2 model by probing input shape
+                    test_in = torch.zeros(1, WIN_FRAMES_V2, NUM_MEL_BINS)
+                    try:
+                        jit_model(test_in)
+                        # V2 model — extract state dict
+                        sd = {}
+                        for name, param in jit_model.named_parameters():
+                            sd[name] = param
+                        model.load_state_dict(sd, strict=False)
+                        self._set(message="Loaded existing V2 model weights for fine-tuning")
+                    except Exception:
+                        self._set(message="Existing model is V1 (MLP). Starting fresh V2 CNN training.")
                 except Exception as exc:
                     self._set(message=f"Could not load weights ({exc}), training from scratch")
             else:
-                self._set(message="Initialising model from scratch")
+                self._set(message="Initialising V2 CNN model from scratch")
 
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model  = model.to(device)
@@ -265,7 +399,7 @@ class TrainingJob:
                 )
 
             # ── Save model ─────────────────────────────────────────────────
-            self._set(message="Saving model…")
+            self._set(message="Saving V2 model…")
             # Backup existing model
             os.makedirs(BACKUP_DIR, exist_ok=True)
             if os.path.isfile(MODEL_PATH):
@@ -276,16 +410,16 @@ class TrainingJob:
 
             # Trace and save
             model.eval().cpu()
-            example = torch.zeros(1, INPUT_SIZE)
+            example = torch.zeros(1, WIN_FRAMES_V2, NUM_MEL_BINS)
             traced  = torch.jit.trace(model, example)
             torch.jit.save(traced, MODEL_PATH)
 
             self._set(
                 state="done",
                 finished_at=time.time(),
-                message=f"Training complete. Model saved to {MODEL_PATH}",
+                message=f"Training complete. V2 CNN model saved to {MODEL_PATH}",
             )
-            _logger.info("Training job finished successfully")
+            _logger.info("Training job finished successfully (V2 CNN)")
 
         except Exception as exc:
             _logger.exception("Training failed")

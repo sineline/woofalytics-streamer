@@ -140,6 +140,373 @@ logger = logging.getLogger("Main")
 
 LOG_PATH = "./log.txt"
 
+import mqtt_manager as _mqtt_mod
+
+
+# ── Clip slicing helper (with smart silence removal) ─────────────────────────
+
+def _detect_sound_regions(clip_path, silence_thresh=-35, min_silence_dur=0.5):
+    """Use ffmpeg silencedetect to find non-silent regions in an audio file.
+
+    Returns list of (start, end) tuples in seconds.
+    """
+    cmd = [
+        "ffmpeg", "-i", clip_path, "-af",
+        f"silencedetect=noise={silence_thresh}dB:d={min_silence_dur}",
+        "-f", "null", "-",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        stderr = result.stderr
+    except Exception as exc:
+        logger.warning(f"silencedetect failed: {exc}")
+        return []
+
+    # Parse silence_start / silence_end from stderr
+    import re
+    silence_starts = [float(m) for m in re.findall(r"silence_start: ([\d.]+)", stderr)]
+    silence_ends = [float(m) for m in re.findall(r"silence_end: ([\d.]+)", stderr)]
+
+    # Get total duration
+    dur_match = re.search(r"Duration: (\d+):(\d+):([\d.]+)", stderr)
+    if dur_match:
+        total_dur = int(dur_match.group(1)) * 3600 + int(dur_match.group(2)) * 60 + float(dur_match.group(3))
+    else:
+        # Fallback: ffprobe
+        try:
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", clip_path],
+                capture_output=True, text=True, timeout=10,
+            )
+            total_dur = float(probe.stdout.strip())
+        except Exception:
+            total_dur = 60.0
+
+    # Build sound regions (inverse of silence regions)
+    sound_regions = []
+    pos = 0.0
+
+    for i, s_start in enumerate(silence_starts):
+        if s_start > pos + 0.3:  # sound region must be at least 0.3s
+            sound_regions.append((pos, s_start))
+        if i < len(silence_ends):
+            pos = silence_ends[i]
+        else:
+            pos = total_dur
+
+    # Trailing sound after last silence
+    if pos < total_dur - 0.3:
+        sound_regions.append((pos, total_dur))
+
+    # If no silence was detected, the whole file is sound
+    if not silence_starts and total_dur > 0:
+        sound_regions = [(0, total_dur)]
+
+    return sound_regions
+
+
+def _slice_clip(bark_logger, event_id, seg_seconds=5, smart=False,
+                silence_thresh=-35):
+    """Split a long clip into shorter segments using ffmpeg.
+
+    If smart=True, uses silencedetect to skip silent sections.
+    Each segment gets its own MP3 file and event record in the DB.
+    The original event is kept untouched.
+    """
+    ev = bark_logger.get_event_by_id(event_id)
+    if not ev:
+        return {"error": f"Event {event_id} not found"}
+    clip_path = ev.get("clip_path")
+    if not clip_path or not os.path.isfile(clip_path):
+        return {"error": "No clip file found for this event"}
+
+    # Probe actual duration
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", clip_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        actual_dur = float(probe.stdout.strip())
+    except Exception:
+        actual_dur = ev.get("duration") or 60
+
+    base_ts = ev.get("timestamp", "")
+    base_name = os.path.splitext(os.path.basename(clip_path))[0]
+    segment_ids = []
+
+    if smart:
+        # Smart mode: detect sound regions, then extract only those
+        regions = _detect_sound_regions(clip_path, silence_thresh)
+        if not regions:
+            return {"error": "No sound detected in clip (all silence)"}
+
+        for i, (start, end) in enumerate(regions):
+            seg_dur = end - start
+            if seg_dur < 0.5:
+                continue  # too short
+
+            # If a sound region is longer than seg_seconds, sub-split it
+            sub_regions = []
+            if seg_dur > seg_seconds * 1.5:
+                pos = start
+                while pos < end - 0.5:
+                    sub_end = min(pos + seg_seconds, end)
+                    sub_regions.append((pos, sub_end))
+                    pos += seg_seconds
+            else:
+                sub_regions = [(start, end)]
+
+            for j, (ss, se) in enumerate(sub_regions):
+                out_path = f"./clips/{base_name}_v{i:02d}_{j:02d}.mp3"
+                dur = se - ss
+                cmd = [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-ss", f"{ss:.3f}", "-t", f"{dur:.3f}",
+                    "-i", clip_path,
+                    "-ac", "1", "-q:a", "4", out_path,
+                ]
+                try:
+                    result = subprocess.run(cmd, capture_output=True, timeout=15)
+                    if result.returncode != 0:
+                        continue
+                except Exception:
+                    continue
+
+                new_id = bark_logger.log_event(
+                    timestamp=base_ts, clip_path=out_path,
+                    bark_prob=ev.get("bark_prob", 0),
+                    peak_dbfs=ev.get("peak_dbfs", -60),
+                    avg_dbfs=ev.get("avg_dbfs", -60),
+                    duration=round(dur, 1),
+                    doa=ev.get("doa", 90), dog_id=ev.get("dog_id"),
+                )
+                if new_id:
+                    segment_ids.append(new_id)
+    else:
+        # Dumb mode: fixed-length segments
+        duration = ev.get("duration") or 0
+        if actual_dur <= seg_seconds:
+            return {"error": f"Clip is only {actual_dur:.0f}s, shorter than segment size {seg_seconds}s"}
+
+        n_segments = int(actual_dur // seg_seconds)
+        if actual_dur % seg_seconds >= 1.0:
+            n_segments += 1
+
+        for i in range(n_segments):
+            start = i * seg_seconds
+            out_path = f"./clips/{base_name}_s{i:03d}.mp3"
+            cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", str(start)]
+            if i < n_segments - 1:
+                cmd += ["-t", str(seg_seconds)]
+            cmd += ["-i", clip_path, "-ac", "1", "-q:a", "4", out_path]
+
+            try:
+                result = subprocess.run(cmd, capture_output=True, timeout=15)
+                if result.returncode != 0:
+                    continue
+            except Exception:
+                continue
+
+            seg_dur = min(seg_seconds, actual_dur - start)
+            new_id = bark_logger.log_event(
+                timestamp=base_ts, clip_path=out_path,
+                bark_prob=ev.get("bark_prob", 0),
+                peak_dbfs=ev.get("peak_dbfs", -60),
+                avg_dbfs=ev.get("avg_dbfs", -60),
+                duration=round(seg_dur, 1),
+                doa=ev.get("doa", 90), dog_id=ev.get("dog_id"),
+            )
+            if new_id:
+                segment_ids.append(new_id)
+
+    return {"segments": segment_ids, "count": len(segment_ids),
+            "segment_seconds": seg_seconds, "smart": smart}
+
+
+# ── AI labeling helper ───────────────────────────────────────────────────────
+
+def _ai_label_clip(bark_logger, event_id, settings):
+    """Use Google Gemini to classify an audio clip as bark or not-bark."""
+    api_key = settings.get("gemini_api_key", "")
+    if not api_key:
+        return {"error": "Gemini API key not configured. Set it in Settings."}
+
+    ev = bark_logger.get_event_by_id(event_id)
+    if not ev:
+        return {"error": f"Event {event_id} not found"}
+    clip_path = ev.get("clip_path")
+    if not clip_path or not os.path.isfile(clip_path):
+        return {"error": "No clip file found"}
+
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=api_key)
+
+        # Upload the audio file
+        with open(clip_path, "rb") as f:
+            audio_data = f.read()
+
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                {
+                    "parts": [
+                        {
+                            "inline_data": {
+                                "mime_type": "audio/mpeg",
+                                "data": __import__("base64").b64encode(audio_data).decode(),
+                            }
+                        },
+                        {
+                            "text": (
+                                "Listen to this audio clip. Classify it as either 'bark' (dog barking) "
+                                "or 'not_bark' (any other sound: silence, talking, traffic, music, etc). "
+                                "Respond with ONLY a JSON object in this exact format, nothing else:\n"
+                                '{"label": "bark" or "not_bark", "confidence": 0.0-1.0, '
+                                '"description": "brief description of what you hear"}'
+                            ),
+                        },
+                    ]
+                }
+            ],
+        )
+
+        # Parse response
+        text = response.text.strip()
+        # Handle markdown code block wrapping
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        result = json.loads(text)
+
+        label_val = 1 if result.get("label") == "bark" else 0
+
+        return {
+            "event_id": event_id,
+            "ai_label": result.get("label", "unknown"),
+            "label": label_val,
+            "confidence": result.get("confidence", 0),
+            "description": result.get("description", ""),
+        }
+    except json.JSONDecodeError as exc:
+        return {"error": f"Failed to parse AI response: {text[:200]}"}
+    except Exception as exc:
+        return {"error": f"Gemini API error: {str(exc)}"}
+
+
+# ── Augmentation helper ──────────────────────────────────────────────────────
+
+def _augment_clips(bark_logger, event_ids, augmentations):
+    """Generate augmented versions of labelled clips using ffmpeg.
+
+    augmentations: dict with keys:
+      - gain: list of dB values (e.g. [-12, -6, 6, 12])
+      - speed: list of speed factors (e.g. [0.9, 1.1])
+      - reverb: bool
+    """
+    results = []
+    gains = augmentations.get("gain", [])
+    speeds = augmentations.get("speed", [])
+    add_reverb = augmentations.get("reverb", False)
+
+    for eid in event_ids:
+        ev = bark_logger.get_event_by_id(eid)
+        if not ev or not ev.get("clip_path") or ev.get("label") is None:
+            continue
+        clip_path = ev["clip_path"]
+        if not os.path.isfile(clip_path):
+            continue
+
+        base_name = os.path.splitext(os.path.basename(clip_path))[0]
+        label = ev["label"]
+        base_ts = ev.get("timestamp", "")
+
+        # Gain augmentations
+        for g in gains:
+            out = f"./clips/{base_name}_g{'+' if g >= 0 else ''}{g}dB.mp3"
+            cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", clip_path,
+                "-af", f"volume={g}dB",
+                "-ac", "1", "-q:a", "4", out,
+            ]
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=15)
+                if os.path.isfile(out):
+                    new_id = bark_logger.log_event(
+                        timestamp=base_ts, clip_path=out,
+                        bark_prob=ev.get("bark_prob", 0),
+                        peak_dbfs=ev.get("peak_dbfs", -60) + g,
+                        avg_dbfs=ev.get("avg_dbfs", -60) + g,
+                        duration=ev.get("duration", 0),
+                        doa=ev.get("doa", 90), dog_id=ev.get("dog_id"),
+                    )
+                    if new_id:
+                        bark_logger.set_label(new_id, label)
+                        results.append(new_id)
+            except Exception:
+                pass
+
+        # Speed augmentations
+        for s in speeds:
+            suffix = f"_sp{s:.1f}x"
+            out = f"./clips/{base_name}{suffix}.mp3"
+            # atempo only accepts 0.5-2.0
+            tempo = max(0.5, min(2.0, s))
+            cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", clip_path,
+                "-af", f"atempo={tempo}",
+                "-ac", "1", "-q:a", "4", out,
+            ]
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=15)
+                if os.path.isfile(out):
+                    new_dur = (ev.get("duration", 0) or 0) / tempo
+                    new_id = bark_logger.log_event(
+                        timestamp=base_ts, clip_path=out,
+                        bark_prob=ev.get("bark_prob", 0),
+                        peak_dbfs=ev.get("peak_dbfs", -60),
+                        avg_dbfs=ev.get("avg_dbfs", -60),
+                        duration=round(new_dur, 1),
+                        doa=ev.get("doa", 90), dog_id=ev.get("dog_id"),
+                    )
+                    if new_id:
+                        bark_logger.set_label(new_id, label)
+                        results.append(new_id)
+            except Exception:
+                pass
+
+        # Reverb augmentation (simple aecho)
+        if add_reverb:
+            out = f"./clips/{base_name}_reverb.mp3"
+            cmd = [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", clip_path,
+                "-af", "aecho=0.8:0.88:60:0.4",
+                "-ac", "1", "-q:a", "4", out,
+            ]
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=15)
+                if os.path.isfile(out):
+                    new_id = bark_logger.log_event(
+                        timestamp=base_ts, clip_path=out,
+                        bark_prob=ev.get("bark_prob", 0),
+                        peak_dbfs=ev.get("peak_dbfs", -60),
+                        avg_dbfs=ev.get("avg_dbfs", -60),
+                        duration=ev.get("duration", 0),
+                        doa=ev.get("doa", 90), dog_id=ev.get("dog_id"),
+                    )
+                    if new_id:
+                        bark_logger.set_label(new_id, label)
+                        results.append(new_id)
+            except Exception:
+                pass
+
+    return {"augmented_ids": results, "count": len(results)}
+
 
 class RequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -207,6 +574,66 @@ class RequestHandler(BaseHTTPRequestHandler):
             lr     = float(data.get("lr", 1e-3))
             result = _trainer_mod.get_job().start(clips, mode=mode, epochs=epochs, lr=lr)
             self._send_json(result)
+        elif parsed.path.startswith("/api/clips/") and parsed.path.endswith("/slice"):
+            # POST /api/clips/<id>/slice  { "segment_seconds": 5, "smart": true }
+            parts = parsed.path.strip("/").split("/")
+            try:
+                event_id = int(parts[2])
+            except (IndexError, ValueError):
+                self._send_json({"error": "invalid event id"}, 400)
+                return
+            seg_sec = int(data.get("segment_seconds", 5))
+            seg_sec = max(2, min(seg_sec, 30))
+            smart = data.get("smart", False)
+            silence_thresh = int(data.get("silence_thresh", -35))
+            result = _slice_clip(wa._bark_logger, event_id, seg_sec,
+                                 smart=smart, silence_thresh=silence_thresh)
+            self._send_json(result)
+
+        # ── MQTT ───────────────────────────────────────────────────────────
+        elif parsed.path == "/api/mqtt/test":
+            result = _mqtt_mod.get_manager().test_connection(data)
+            self._send_json(result)
+        elif parsed.path == "/api/mqtt/configure":
+            # Save MQTT settings and apply
+            settings = cfg_store.update(data)
+            _mqtt_mod.get_manager().configure(settings)
+            self._send_json({"ok": True})
+
+        # ── AI labeling ────────────────────────────────────────────────────
+        elif parsed.path == "/api/ai/label":
+            event_id = data.get("event_id")
+            if not event_id:
+                self._send_json({"error": "event_id required"}, 400)
+                return
+            settings = cfg_store.get()
+            result = _ai_label_clip(wa._bark_logger, int(event_id), settings)
+            self._send_json(result)
+        elif parsed.path == "/api/ai/label-batch":
+            event_ids = data.get("event_ids", [])
+            if not event_ids:
+                self._send_json({"error": "event_ids required"}, 400)
+                return
+            settings = cfg_store.get()
+            results = []
+            for eid in event_ids:
+                r = _ai_label_clip(wa._bark_logger, int(eid), settings)
+                if not r.get("error"):
+                    # Auto-apply the label
+                    wa._bark_logger.set_label(int(eid), r["label"])
+                results.append(r)
+            self._send_json({"results": results, "count": len(results)})
+
+        # ── Augmentation ───────────────────────────────────────────────────
+        elif parsed.path == "/api/augment":
+            event_ids = data.get("event_ids", [])
+            augmentations = data.get("augmentations", {})
+            if not event_ids:
+                self._send_json({"error": "event_ids required"}, 400)
+                return
+            result = _augment_clips(wa._bark_logger, event_ids, augmentations)
+            self._send_json(result)
+
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -286,6 +713,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_html("./html/record.html")
         elif path == "/train":
             self._send_html("./html/train.html")
+        elif path == "/mqtt":
+            self._send_html("./html/mqtt.html")
+        elif path == "/augment":
+            self._send_html("./html/augment.html")
 
         elif path == "/nav.js":
             self.send_response(200)
@@ -369,6 +800,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             events = wa._bark_logger.get_recent_events(limit=500)
             self._send_json(events)
 
+        elif path == "/api/mqtt/status":
+            self._send_json(_mqtt_mod.get_manager().get_status())
+
         # ── Camera MJPEG stream ───────────────────────────────────────────────
         elif path == "/video_feed":
             self.send_response(200)
@@ -443,6 +877,14 @@ def run_server(handler_class=RequestHandler, port=8000):
 def main():
     logger.info("Starting Woofalytics server, press Ctrl+C to stop...")
     wa.start()
+
+    # Initialize MQTT from saved settings
+    try:
+        settings = cfg_store.get()
+        _mqtt_mod.get_manager().configure(settings)
+    except Exception as exc:
+        logger.warning(f"MQTT init: {exc}")
+
     run_server()
 
 
