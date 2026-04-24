@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import threading
 import datetime
@@ -40,14 +41,44 @@ class BarkLogger:
                     dog_id    TEXT REFERENCES dogs(dog_id)
                 )
             """)
+            # Sound classes table for multi-class classification
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS sound_classes (
+                    class_id  INTEGER PRIMARY KEY,
+                    name      TEXT NOT NULL,
+                    icon      TEXT DEFAULT '🔊',
+                    color     TEXT DEFAULT '#64748b'
+                )
+            """)
+            # Seed default classes if empty
+            existing = c.execute("SELECT COUNT(*) FROM sound_classes").fetchone()[0]
+            if existing == 0:
+                c.executemany(
+                    "INSERT INTO sound_classes (class_id, name, icon, color) VALUES (?,?,?,?)",
+                    [
+                        (0, "Other",               "🔇", "#64748b"),
+                        (1, "Bark (Unknown Dog)",   "🐕", "#22c55e"),
+                    ],
+                )
             # Migrations for existing DBs
             for col_def in ["doa REAL", "avg_dbfs REAL",
                             "upload_status TEXT", "upload_url TEXT",
-                            "label INTEGER"]:   # label: 1=bark, 0=not-bark, NULL=auto
+                            "label INTEGER",
+                            "ch_energies TEXT",
+                            "sound_class INTEGER"]:
                 try:
                     c.execute(f"ALTER TABLE events ADD COLUMN {col_def}")
                 except Exception:
                     pass
+            # Migrate existing binary labels → sound_class
+            c.execute("""
+                UPDATE events SET sound_class = 1
+                WHERE label = 1 AND sound_class IS NULL
+            """)
+            c.execute("""
+                UPDATE events SET sound_class = 0
+                WHERE label = 0 AND sound_class IS NULL
+            """)
 
     # ── Dog identity helpers ──────────────────────────────────────────────────
 
@@ -86,9 +117,10 @@ class BarkLogger:
     # ── Event logging ─────────────────────────────────────────────────────────
 
     def log_event(self, timestamp, clip_path, bark_prob, peak_dbfs, avg_dbfs,
-                  duration, doa=90.0, dog_id=None):
+                  duration, doa=90.0, dog_id=None, ch_energies=None):
         with self._lock:
             try:
+                ch_json = json.dumps(ch_energies) if ch_energies else None
                 with self._conn() as c:
                     # Auto-assign to first dog, creating "Dog 1" if none exist
                     if not dog_id:
@@ -105,9 +137,9 @@ class BarkLogger:
                             )
                     cur = c.execute(
                         "INSERT INTO events "
-                        "(timestamp,clip_path,bark_prob,peak_dbfs,avg_dbfs,duration,doa,dog_id) "
-                        "VALUES (?,?,?,?,?,?,?,?)",
-                        (timestamp, clip_path, bark_prob, peak_dbfs, avg_dbfs, duration, doa, dog_id),
+                        "(timestamp,clip_path,bark_prob,peak_dbfs,avg_dbfs,duration,doa,dog_id,ch_energies) "
+                        "VALUES (?,?,?,?,?,?,?,?,?)",
+                        (timestamp, clip_path, bark_prob, peak_dbfs, avg_dbfs, duration, doa, dog_id, ch_json),
                     )
                     event_id = cur.lastrowid
                 self._logger.info(
@@ -129,19 +161,69 @@ class BarkLogger:
                 )
 
     def set_label(self, event_id: int, label: int):
-        """Manually label an event: 1=bark, 0=not-bark."""
+        """Manually label an event: 1=bark, 0=not-bark (legacy compat)."""
         with self._lock:
             with self._conn() as c:
-                c.execute("UPDATE events SET label=? WHERE id=?", (label, event_id))
+                c.execute("UPDATE events SET label=?, sound_class=? WHERE id=?",
+                          (label, label, event_id))
+
+    def set_sound_class(self, event_id: int, class_id: int):
+        """Set the sound class for an event (multi-class labeling)."""
+        with self._lock:
+            with self._conn() as c:
+                # Also set legacy label for backward compat (0=other, 1+=bark variant)
+                legacy_label = 0 if class_id == 0 else 1
+                c.execute("UPDATE events SET sound_class=?, label=? WHERE id=?",
+                          (class_id, legacy_label, event_id))
 
     def get_labelled_clips(self) -> list:
         """Return all events that have an explicit label set, for training."""
         with self._conn() as c:
             cur = c.execute(
-                "SELECT id, clip_path, label FROM events "
-                "WHERE label IS NOT NULL AND clip_path IS NOT NULL"
+                "SELECT id, clip_path, label, sound_class, doa, ch_energies FROM events "
+                "WHERE (label IS NOT NULL OR sound_class IS NOT NULL) AND clip_path IS NOT NULL"
             )
+            rows = [dict(zip([d[0] for d in cur.description], row)) for row in cur.fetchall()]
+            # Parse ch_energies JSON
+            for r in rows:
+                if r.get("ch_energies"):
+                    try:
+                        r["ch_energies"] = json.loads(r["ch_energies"])
+                    except Exception:
+                        r["ch_energies"] = None
+            return rows
+
+    # ── Sound classes ─────────────────────────────────────────────────────────
+
+    def get_sound_classes(self) -> list:
+        """Return all sound classes."""
+        with self._conn() as c:
+            cur = c.execute("SELECT class_id, name, icon, color FROM sound_classes ORDER BY class_id")
             return [dict(zip([d[0] for d in cur.description], row)) for row in cur.fetchall()]
+
+    def create_sound_class(self, name: str, icon: str = "🔊", color: str = "#64748b") -> int:
+        """Create a new sound class. Returns the class_id."""
+        with self._lock:
+            with self._conn() as c:
+                # Auto-assign next class_id
+                max_id = c.execute("SELECT MAX(class_id) FROM sound_classes").fetchone()[0]
+                new_id = (max_id or 0) + 1
+                c.execute(
+                    "INSERT INTO sound_classes (class_id, name, icon, color) VALUES (?,?,?,?)",
+                    (new_id, name, icon, color),
+                )
+                return new_id
+
+    def delete_sound_class(self, class_id: int):
+        """Delete a sound class. Cannot delete class 0 (Other)."""
+        if class_id == 0:
+            return False
+        with self._lock:
+            with self._conn() as c:
+                # Clear sound_class on events that had this class
+                c.execute("UPDATE events SET sound_class=NULL WHERE sound_class=?", (class_id,))
+                c.execute("DELETE FROM sound_classes WHERE class_id=?", (class_id,))
+        return True
 
     def delete_event(self, event_id):
         """Delete an event record. Returns clip_path so caller can delete the file."""
@@ -165,14 +247,21 @@ class BarkLogger:
         with self._conn() as c:
             cols_sel = (
                 "id,timestamp,clip_path,bark_prob,peak_dbfs,avg_dbfs,"
-                "duration,doa,dog_id,upload_status,upload_url,label"
+                "duration,doa,dog_id,upload_status,upload_url,label,"
+                "ch_energies,sound_class"
             )
             cur = c.execute(f"SELECT {cols_sel} FROM events WHERE id=?", (event_id,))
             row = cur.fetchone()
             if not row:
                 return None
             cols = [d[0] for d in cur.description]
-            return dict(zip(cols, row))
+            ev = dict(zip(cols, row))
+            if ev.get("ch_energies"):
+                try:
+                    ev["ch_energies"] = json.loads(ev["ch_energies"])
+                except Exception:
+                    ev["ch_energies"] = None
+            return ev
 
     # ── Queries ───────────────────────────────────────────────────────────────
 
@@ -181,7 +270,8 @@ class BarkLogger:
         with self._conn() as c:
             cols_sel = (
                 "id,timestamp,clip_path,bark_prob,peak_dbfs,avg_dbfs,"
-                "duration,doa,dog_id,upload_status,upload_url,label"
+                "duration,doa,dog_id,upload_status,upload_url,label,"
+                "ch_energies,sound_class"
             )
             if dog_id:
                 cur = c.execute(
@@ -194,7 +284,14 @@ class BarkLogger:
                     (limit,),
                 )
             cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
+            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+            for r in rows:
+                if r.get("ch_energies"):
+                    try:
+                        r["ch_energies"] = json.loads(r["ch_energies"])
+                    except Exception:
+                        r["ch_energies"] = None
+            return rows
 
     def get_dog_stats(self):
         with self._conn() as c:

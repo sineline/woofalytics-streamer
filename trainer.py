@@ -1,7 +1,13 @@
 """
 trainer.py — In-process model fine-tuning from archived bark clips.
 
-Architecture V2 (1D CNN — replaces original MLP):
+Architecture V3 (Dual-branch CNN — multi-class with spatial features):
+  WoofClassifierV3(num_classes=N, spatial_dim=5)
+  Audio branch:  Conv1d stack → 256-dim vector
+  Spatial branch: FC(5→16) from [doa, ch1_rms, ch2_rms, ch3_rms, ch4_rms]
+  Fusion: Concat(256+16) → FC(272→64) → FC(64→N)
+
+Architecture V2 (1D CNN — binary, kept for backward compatibility):
   WoofClassifierV2(input_shape=[1, 50, 80])
   Conv1d(80→32, k=5) + BN + ReLU + MaxPool(2)
   Conv1d(32→64, k=3) + BN + ReLU + MaxPool(2)
@@ -110,6 +116,66 @@ class WoofClassifierV2(nn.Module):
         return torch.sigmoid(self.output_layer(x))
 
 
+# ── V3 Model (Dual-branch CNN: audio + spatial) ──────────────────────────
+
+class WoofClassifierV3(nn.Module):
+    """Multi-class sound classifier with spatial features.
+
+    Takes a single input tensor [batch, 50, 85] where:
+      - [:, :, :80] = mel spectrogram (audio features)
+      - [:, 0, 80:85] = spatial features [doa_norm, ch1, ch2, ch3, ch4]
+        (same spatial values replicated across time dim, only first row used)
+
+    Output: [batch, num_classes] logits (no softmax — use CrossEntropyLoss)
+    """
+    def __init__(self, num_classes=2, spatial_dim=SPATIAL_DIM):
+        super().__init__()
+        self.num_classes = num_classes
+        self.spatial_dim = spatial_dim
+
+        # Audio branch (same architecture as V2)
+        self.conv1 = nn.Conv1d(NUM_MEL_BINS, 32, kernel_size=5, padding=2)
+        self.bn1   = nn.BatchNorm1d(32)
+        self.pool1 = nn.MaxPool1d(2)
+
+        self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
+        self.bn2   = nn.BatchNorm1d(64)
+        self.pool2 = nn.MaxPool1d(2)
+
+        self.conv3 = nn.Conv1d(64, 64, kernel_size=3, padding=1)
+        self.bn3   = nn.BatchNorm1d(64)
+        self.apool = nn.AdaptiveAvgPool1d(4)
+
+        # Spatial branch
+        self.spatial_fc = nn.Linear(spatial_dim, 16)
+
+        # Fusion
+        self.fuse_fc1 = nn.Linear(64 * 4 + 16, 64)
+        self.fuse_drop = nn.Dropout(0.3)
+        self.fuse_fc2 = nn.Linear(64, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [batch, 50, 85] — split into audio and spatial
+        audio = x[:, :, :NUM_MEL_BINS]           # [batch, 50, 80]
+        spatial = x[:, 0, NUM_MEL_BINS:]          # [batch, 5] (from first frame)
+
+        # Audio branch: [batch, 50, 80] → [batch, 80, 50]
+        a = audio.transpose(1, 2)
+        a = self.pool1(F.relu(self.bn1(self.conv1(a))))
+        a = self.pool2(F.relu(self.bn2(self.conv2(a))))
+        a = self.apool(F.relu(self.bn3(self.conv3(a))))
+        a = a.flatten(1)  # [batch, 256]
+
+        # Spatial branch
+        s = F.relu(self.spatial_fc(spatial))  # [batch, 16]
+
+        # Fusion
+        fused = torch.cat([a, s], dim=1)      # [batch, 272]
+        fused = F.relu(self.fuse_fc1(fused))
+        fused = self.fuse_drop(fused)
+        return self.fuse_fc2(fused)            # [batch, num_classes] logits
+
+
 # ── V1 Model (legacy MLP — kept for backward compat) ─────────────────────────
 
 class WoofClassifier(nn.Module):
@@ -206,42 +272,73 @@ def _extract_windows_v1(waveform: torch.Tensor) -> List[torch.Tensor]:
 
 def build_dataset(
     clips: List[dict],
-    model_version: int = 2,
+    model_version: int = 3,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Build X and y tensors from labelled clips.
 
+    V3: X is [N, 50, 85], y is [N] (class indices)
     V2: X is [N, 50, 80], y is [N, 1]
     V1: X is [N, 480],    y is [N, 1]
 
-    For V2 training, each clip is processed twice (original + augmented)
-    to increase dataset size and gain-invariance.
+    For V2/V3 training, each clip is processed twice (original + augmented).
     """
     X, y = [], []
     for item in clips:
         waveform = _load_clip(item["path"])
         if waveform is None:
             continue
-        label = float(item["label"])
 
-        if model_version == 2:
-            # Original
+        if model_version == 3:
+            class_id = int(item.get("sound_class") or item.get("label", 0))
+            # Spatial features: [doa_norm, ch1, ch2, ch3, ch4]
+            doa = float(item.get("doa") or 90) / 180.0  # normalize to [0, 1]
+            ch_e = item.get("ch_energies") or [0, 0, 0, 0]
+            # Normalize channel energies: dBFS values typically -60 to 0
+            # Map to roughly [-1, 1] range
+            ch_norm = [(e + 30) / 30 for e in ch_e]  # -60→-1, 0→1
+            spatial = [doa] + ch_norm[:4]
+            # Pad to 4 channels if fewer
+            while len(spatial) < SPATIAL_DIM:
+                spatial.append(0.0)
+            spatial_t = torch.tensor(spatial[:SPATIAL_DIM], dtype=torch.float32)
+
+            for aug in [False, True]:
+                for w in _extract_windows_v2(waveform, augment=aug):
+                    # w is [1, 50, 80] — append spatial to make [1, 50, 85]
+                    w = w.squeeze(0)  # [50, 80]
+                    # Broadcast spatial to all frames (model reads from first row)
+                    s_expand = spatial_t.unsqueeze(0).expand(50, -1)  # [50, 5]
+                    combined = torch.cat([w, s_expand], dim=1)  # [50, 85]
+                    X.append(combined.unsqueeze(0))  # [1, 50, 85]
+                    y.append(class_id)
+
+        elif model_version == 2:
+            label = float(item.get("label", 0))
             for w in _extract_windows_v2(waveform, augment=False):
                 X.append(w)
                 y.append(torch.tensor([[label]], dtype=torch.float32))
-            # Augmented copy (random gain)
             for w in _extract_windows_v2(waveform, augment=True):
                 X.append(w)
                 y.append(torch.tensor([[label]], dtype=torch.float32))
         else:
+            label = float(item.get("label", 0))
             for w in _extract_windows_v1(waveform):
                 X.append(w)
                 y.append(torch.tensor([[label]], dtype=torch.float32))
 
     if not X:
+        if model_version == 3:
+            return torch.empty(0, WIN_FRAMES_V2, NUM_MEL_BINS + SPATIAL_DIM), torch.empty(0, dtype=torch.long)
         if model_version == 2:
             return torch.empty(0, WIN_FRAMES_V2, NUM_MEL_BINS), torch.empty(0, 1)
         return torch.empty(0, INPUT_SIZE_V1), torch.empty(0, 1)
-    return torch.cat(X, dim=0), torch.cat(y, dim=0)
+
+    X_cat = torch.cat(X, dim=0)
+    if model_version == 3:
+        y_cat = torch.tensor(y, dtype=torch.long)
+    else:
+        y_cat = torch.cat(y, dim=0)
+    return X_cat, y_cat
 
 
 # ── Training job ──────────────────────────────────────────────────────────────
