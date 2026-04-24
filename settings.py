@@ -51,6 +51,18 @@ _DEFAULT = {
     "mqtt_ha_discovery":    False,
     # ── AI labeling (Google Gemini) ─────────────────────────────────────────
     "gemini_api_key":       "",
+    "gemini_model":         "gemini-2.5-flash",
+    # ── Auto-trim (smart slice on save) ────────────────────────────────────
+    "auto_smart_slice":     True,
+    "silence_thresh_db":    -45,
+    "min_segment_seconds":  0.5,
+    "max_segment_seconds":  8,
+    # ── Noise reduction (post-save FFT denoising) ─────────────────────────
+    "noise_reduction":      True,
+    "noise_reduction_db":   12,
+    # ── Speech filter (auto-delete clips with human voices) ───────────────
+    "speech_filter":        True,
+    "speech_filter_thresh": 0.35,   # delete if >35% of clip is speech
 }
 
 _lock = threading.Lock()

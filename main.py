@@ -349,8 +349,10 @@ def _ai_label_clip(bark_logger, event_id, settings):
         with open(clip_path, "rb") as f:
             audio_data = f.read()
 
+        gemini_model = settings.get("gemini_model", "gemini-2.5-flash")
+
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model=gemini_model,
             contents=[
                 {
                     "parts": [
@@ -537,6 +539,67 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         length = int(self.headers.get("Content-Length", 0))
+
+        # ── Multipart file upload: /api/clips/import ──────────────────────
+        if parsed.path == "/api/clips/import":
+            import cgi
+            import datetime as dt
+            ctype = self.headers.get("Content-Type", "")
+            if "multipart/form-data" not in ctype:
+                self._send_json({"error": "multipart/form-data required"}, 400)
+                return
+            form = cgi.FieldStorage(
+                fp=self.rfile, headers=self.headers,
+                environ={"REQUEST_METHOD": "POST",
+                         "CONTENT_TYPE": ctype,
+                         "CONTENT_LENGTH": str(length)},
+            )
+            files = form["files"] if "files" in form else []
+            if not isinstance(files, list):
+                files = [files]
+            os.makedirs("./clips", exist_ok=True)
+            imported = 0
+            for f in files:
+                if not f.filename:
+                    continue
+                ext = os.path.splitext(f.filename)[1].lower()
+                if ext not in (".mp3", ".wav", ".flac", ".ogg", ".m4a"):
+                    continue
+                dest = f"./clips/{time.time_ns()}{ext}"
+                with open(dest, "wb") as out:
+                    out.write(f.file.read())
+                # Convert non-MP3 to MP3 for consistency
+                if ext != ".mp3":
+                    mp3_dest = dest.rsplit(".", 1)[0] + ".mp3"
+                    try:
+                        subprocess.run(
+                            ["ffmpeg", "-y", "-loglevel", "error",
+                             "-i", dest, "-ac", "1", "-q:a", "4", mp3_dest],
+                            capture_output=True, timeout=30,
+                        )
+                        os.remove(dest)
+                        dest = mp3_dest
+                    except Exception:
+                        pass  # keep original format
+                # Probe duration
+                try:
+                    probe = subprocess.run(
+                        ["ffprobe", "-v", "error", "-show_entries",
+                         "format=duration", "-of", "csv=p=0", dest],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    dur = float(probe.stdout.strip())
+                except Exception:
+                    dur = 0
+                wa._bark_logger.log_event(
+                    timestamp=dt.datetime.now().isoformat(),
+                    clip_path=dest, bark_prob=0, peak_dbfs=-30,
+                    avg_dbfs=-30, duration=round(dur, 1), doa=90,
+                )
+                imported += 1
+            self._send_json({"imported": imported})
+            return
+
         body = self.rfile.read(length) if length else b"{}"
         try:
             data = json.loads(body)
@@ -589,6 +652,117 @@ class RequestHandler(BaseHTTPRequestHandler):
             result = _slice_clip(wa._bark_logger, event_id, seg_sec,
                                  smart=smart, silence_thresh=silence_thresh)
             self._send_json(result)
+        elif parsed.path == "/api/clips/slice-all":
+            # POST /api/clips/slice-all — batch smart-slice all long clips
+            settings = cfg_store.get()
+            silence_thresh = int(data.get("silence_thresh",
+                                          settings.get("silence_thresh_db", -35)))
+            max_seg = float(data.get("max_segment_seconds",
+                                     settings.get("max_segment_seconds", 8)))
+            min_duration = float(data.get("min_duration", max_seg + 1))
+
+            all_events = wa._bark_logger.get_recent_events(limit=99999)
+            long_clips = [e for e in all_events
+                          if (e.get("duration") or 0) > min_duration
+                          and e.get("clip_path")
+                          and os.path.isfile(e["clip_path"])]
+
+            results = []
+            for ev in long_clips:
+                r = _slice_clip(wa._bark_logger, ev["id"],
+                                seg_seconds=int(max_seg),
+                                smart=True,
+                                silence_thresh=silence_thresh)
+                results.append({"event_id": ev["id"], **r})
+
+            total_segs = sum(r.get("count", 0) for r in results)
+            self._send_json({
+                "processed": len(long_clips),
+                "total_segments": total_segs,
+                "results": results,
+            })
+        elif parsed.path == "/api/clips/denoise-all":
+            # POST /api/clips/denoise-all — batch FFT denoise
+            settings = cfg_store.get()
+            nr_db = int(data.get("nr_db", settings.get("noise_reduction_db", 12)))
+            all_events = wa._bark_logger.get_recent_events(limit=99999)
+            processed = 0
+            for ev in all_events:
+                cp = ev.get("clip_path", "")
+                if cp and cp.endswith(".mp3") and os.path.isfile(cp):
+                    try:
+                        wa._denoise_clip(cp, nr_db)
+                        processed += 1
+                    except Exception:
+                        pass
+            self._send_json({"processed": processed, "nr_db": nr_db})
+
+        elif parsed.path == "/api/clips/filter-speech":
+            # POST /api/clips/filter-speech — run VAD, delete clips with speech
+            settings = cfg_store.get()
+            thresh = float(data.get("speech_thresh",
+                                    settings.get("speech_filter_thresh", 0.35)))
+            all_events = wa._bark_logger.get_recent_events(limit=99999)
+            deleted = 0
+            checked = 0
+            for ev in all_events:
+                cp = ev.get("clip_path", "")
+                if not cp or not os.path.isfile(cp):
+                    continue
+                checked += 1
+                speech_pct = wa._has_speech(cp)
+                if speech_pct > thresh:
+                    # Delete clip file
+                    try:
+                        os.remove(cp)
+                    except OSError:
+                        pass
+                    # Delete matching FLAC
+                    flac = cp.replace(".mp3", "_4ch.flac")
+                    try:
+                        if os.path.isfile(flac):
+                            os.remove(flac)
+                    except OSError:
+                        pass
+                    # Delete DB event
+                    wa._bark_logger.delete_event(ev["id"])
+                    deleted += 1
+            self._send_json({"checked": checked, "deleted": deleted,
+                             "threshold": thresh})
+
+        elif parsed.path == "/api/clips/clean-silence":
+            # POST /api/clips/clean-silence — remove clips that are all silence
+            settings = cfg_store.get()
+            silence_thresh = int(data.get("silence_thresh",
+                                          settings.get("silence_thresh_db", -35)))
+            all_events = wa._bark_logger.get_recent_events(limit=99999)
+            deleted = 0
+            checked = 0
+            for ev in all_events:
+                cp = ev.get("clip_path", "")
+                if not cp or not os.path.isfile(cp):
+                    continue
+                checked += 1
+                regions = _detect_sound_regions(cp, silence_thresh)
+                if not regions:
+                    try:
+                        os.remove(cp)
+                    except OSError:
+                        pass
+                    flac = cp.replace(".mp3", "_4ch.flac")
+                    try:
+                        if os.path.isfile(flac):
+                            os.remove(flac)
+                    except OSError:
+                        pass
+                    wa._bark_logger.delete_event(ev["id"])
+                    deleted += 1
+            self._send_json({"checked": checked, "deleted": deleted})
+
+        elif parsed.path == "/api/clips/import":
+            # POST /api/clips/import — handled specially (multipart)
+            # This is handled in do_POST with multipart parsing
+            self._send_json({"error": "Use multipart upload"}, 400)
 
         # ── MQTT ───────────────────────────────────────────────────────────
         elif parsed.path == "/api/mqtt/test":

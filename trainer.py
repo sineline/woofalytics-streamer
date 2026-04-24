@@ -52,14 +52,18 @@ MODEL_PATH   = "./models/traced_model.pt"
 BACKUP_DIR   = "./clips/model_backups"
 SAMPLE_RATE  = 16_000
 
-# ── V2 constants ──────────────────────────────────────────────────────────────
+# ── V2/V3 constants ──────────────────────────────────────────────────────────
 WIN_FRAMES_V2 = 50     # 50 fbank frames = 500ms context
 NUM_MEL_BINS  = 80
 INPUT_SIZE_V2 = WIN_FRAMES_V2 * NUM_MEL_BINS  # 4000
+SPATIAL_DIM   = 5      # [doa, ch1_rms, ch2_rms, ch3_rms, ch4_rms]
 
 # ── V1 constants (legacy) ────────────────────────────────────────────────────
 WIN_FRAMES_V1 = 6
 INPUT_SIZE_V1 = 480
+
+# V3 metadata path (stores num_classes, class_names)
+V3_META_PATH = "./models/v3_meta.json"
 
 
 # ── CMVN (cepstral mean & variance normalization) ────────────────────────────

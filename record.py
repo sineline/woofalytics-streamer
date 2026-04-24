@@ -37,16 +37,32 @@ last_preds = []
 class Woofalytics:
     def __init__(self, clip_past_context_seconds=15, clip_future_context_seconds=15):
         self._logger = logging.getLogger("Woofalytics")
-        self._recording_device_index = self.find_andrea_mic_array()
+
+        # Load persisted settings (from Config page) — fall back to env vars
+        try:
+            _saved = cfg_store.get()
+        except Exception:
+            _saved = {}
 
         self._sample_format = pyaudio.paInt16  # 16 bits per sample
-        # MIC_CHANNELS=1 for mono webcam mics; 2 for the Andrea stereo array
-        self._channels = int(os.environ.get("MIC_CHANNELS", "2"))
-        # MIC_SAMPLE_RATE: use 48000 for USB webcam mics, 44100 for Andrea array
-        self._fs = int(os.environ.get("MIC_SAMPLE_RATE", "44100"))
+        self._channels = int(_saved.get("mic_channels") or os.environ.get("MIC_CHANNELS", "2"))
+        self._fs = int(_saved.get("mic_sample_rate") or os.environ.get("MIC_SAMPLE_RATE", "44100"))
         # Chunk = 10ms of audio at the configured sample rate
         self._chunk = int(self._fs * 0.01)
         self._model_sample_rate = 16_000
+
+        # Device selection: explicit index from settings, otherwise auto-detect
+        saved_idx = _saved.get("mic_device_index", -1)
+        if saved_idx is not None and int(saved_idx) >= 0:
+            self._recording_device_index = int(saved_idx)
+            self._logger.info(f"Using saved mic device index: {self._recording_device_index}")
+        else:
+            self._recording_device_index = self.find_andrea_mic_array()
+
+        self._logger.info(
+            f"Mic config: device={self._recording_device_index}, "
+            f"channels={self._channels}, rate={self._fs}"
+        )
 
         self._clip_past_context_seconds = clip_past_context_seconds
         self._clip_future_context_seconds = clip_future_context_seconds
@@ -111,10 +127,14 @@ class Woofalytics:
         if cfg_store.get()["stream_key"]:
             self._streamer.start()
 
+        # Silero VAD for speech filtering (lazy-loaded on first use)
+        self._vad_model = None
+        self._vad_utils = None
+
         # DOA — use all available mic channels for better angular resolution.
         # PS Eye has 4 mics (~13 mm spacing); Andrea has 2 (~40 mm spacing).
         # d is inter-element spacing as a fraction of wavelength (tune per device).
-        d = float(os.environ.get("MIC_ARRAY_SPACING", "0.1"))
+        d = float(_saved.get("mic_array_spacing") or os.environ.get("MIC_ARRAY_SPACING", "0.1"))
         M = self._channels if self._channels >= 2 else 2
         array_alignment = np.arange(0, M, 1) * d
         incident_angles = np.arange(0, 181, 1)
@@ -305,18 +325,33 @@ class Woofalytics:
         import subprocess
         os.makedirs("./clips", exist_ok=True)
         raw_pcm  = b"".join(frames)
-        filename = f"./clips/{time.time_ns()}.mp3"
+        base_name = str(time.time_ns())
+        mp3_path  = f"./clips/{base_name}.mp3"
+        flac_path = f"./clips/{base_name}_4ch.flac"
+
+        # ── Compute per-channel RMS from raw interleaved S16LE PCM ─────────
+        ch_energies = None
+        if self._channels >= 2:
+            try:
+                samples = np.frombuffer(raw_pcm, dtype=np.int16)
+                # Reshape to (n_samples, n_channels) — interleaved format
+                samples = samples.reshape(-1, self._channels).astype(np.float32)
+                # RMS per channel (normalized to 0.0–1.0 range)
+                rms = np.sqrt(np.mean(samples ** 2, axis=0)) / 32768.0
+                ch_energies = [round(float(r), 6) for r in rms]
+                self._logger.debug(f"Per-channel RMS: {ch_energies}")
+            except Exception as exc:
+                self._logger.warning(f"Per-channel RMS failed: {exc}")
+
+        # ── Save mono MP3 (for web playback) ───────────────────────────────
         try:
-            # Pipe raw PCM → ffmpeg → MP3 (mono mix-down keeps file small)
             result = subprocess.run(
                 [
                     "ffmpeg", "-y", "-loglevel", "error",
-                    # Input: interleaved S16_LE PCM from stdin
                     "-f", "s16le", "-ar", str(self._fs),
                     "-ac", str(self._channels), "-i", "pipe:0",
-                    # Output: MP3, mix down to mono, VBR quality 4 (~128 kbps)
                     "-ac", "1", "-q:a", "4",
-                    filename,
+                    mp3_path,
                 ],
                 input=raw_pcm,
                 capture_output=True,
@@ -325,30 +360,316 @@ class Woofalytics:
             if result.returncode != 0:
                 raise RuntimeError(result.stderr.decode())
         except Exception as exc:
-            # Fallback: save as WAV so no clip is ever lost
             self._logger.warning(f"MP3 encode failed ({exc}), falling back to WAV")
-            filename = filename.replace(".mp3", ".wav")
-            wf = wave.open(filename, "wb")
+            mp3_path = mp3_path.replace(".mp3", ".wav")
+            wf = wave.open(mp3_path, "wb")
             wf.setnchannels(self._channels)
             wf.setsampwidth(self._sample_size)
             wf.setframerate(self._fs)
             wf.writeframes(raw_pcm)
             wf.close()
-        self._logger.info(f"Stored {filename}")
+        self._logger.info(f"Stored {mp3_path}")
+
+        # ── Save 4-channel FLAC (preserves spatial data for training) ──────
+        if self._channels >= 2:
+            try:
+                result = subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-loglevel", "error",
+                        "-f", "s16le", "-ar", str(self._fs),
+                        "-ac", str(self._channels), "-i", "pipe:0",
+                        "-c:a", "flac", "-compression_level", "5",
+                        flac_path,
+                    ],
+                    input=raw_pcm,
+                    capture_output=True,
+                    timeout=30,
+                )
+                if result.returncode != 0:
+                    self._logger.warning(f"FLAC encode failed: {result.stderr.decode()}")
+                    flac_path = None
+                else:
+                    self._logger.info(f"Stored multichannel {flac_path}")
+            except Exception as exc:
+                self._logger.warning(f"FLAC encode failed ({exc})")
+                flac_path = None
+        else:
+            flac_path = None
 
         duration = len(frames) * self._chunk / self._fs
+        ts_now = datetime.datetime.now().isoformat()
+
+        # ── Noise reduction (FFT denoising) ────────────────────────────────
+        settings = cfg_store.get()
+        if settings.get("noise_reduction", True) and mp3_path.endswith(".mp3"):
+            try:
+                nr_db = int(settings.get("noise_reduction_db", 12))
+                self._denoise_clip(mp3_path, nr_db)
+            except Exception as exc:
+                self._logger.warning(f"Noise reduction failed ({exc}), keeping original")
+
+        # ── Speech filter: delete clips containing human voices ────────────
+        if settings.get("speech_filter", True):
+            speech_thresh = float(settings.get("speech_filter_thresh", 0.35))
+            speech_pct = self._has_speech(mp3_path)
+            if speech_pct > speech_thresh:
+                self._logger.info(
+                    f"🗣️ Speech detected ({speech_pct:.0%}) — deleting {mp3_path}"
+                )
+                for p in [mp3_path, flac_path]:
+                    try:
+                        if p and os.path.isfile(p):
+                            os.remove(p)
+                    except OSError:
+                        pass
+                return  # don't log or slice this clip
+
+        # ── Auto smart-slice: trim silence, create shorter segments ────────
+        if settings.get("auto_smart_slice", True) and duration > 3:
+            try:
+                self._auto_smart_slice(
+                    mp3_path, ts_now, bark_prob, peak_dbfs, avg_dbfs, doa,
+                    duration, settings, ch_energies=ch_energies,
+                    flac_path=flac_path,
+                )
+                return  # segments created — skip saving the full blob as an event
+            except Exception as exc:
+                self._logger.warning(f"Auto smart-slice failed ({exc}), saving full clip")
+
+        # Fallback: save the full clip as a single event
         event_id = self._bark_logger.log_event(
-            timestamp=datetime.datetime.now().isoformat(),
-            clip_path=filename,
+            timestamp=ts_now,
+            clip_path=mp3_path,
             bark_prob=bark_prob,
             peak_dbfs=peak_dbfs,
             avg_dbfs=avg_dbfs,
             duration=duration,
             doa=doa,
+            ch_energies=ch_energies,
         )
         # Async upload (non-blocking; mode checked inside uploader)
-        if event_id and filename:
-            self._uploader.enqueue(event_id, filename)
+        if event_id and mp3_path:
+            self._uploader.enqueue(event_id, mp3_path)
+
+    def _load_vad(self):
+        """Lazy-load the Silero VAD model on first use."""
+        if self._vad_model is not None:
+            return True
+        try:
+            model, utils = torch.hub.load(
+                "snakers4/silero-vad", "silero_vad",
+                trust_repo=True, verbose=False,
+            )
+            self._vad_model = model
+            self._vad_utils = utils
+            self._logger.info("Silero VAD model loaded")
+            return True
+        except Exception as exc:
+            self._logger.warning(f"Failed to load Silero VAD: {exc}")
+            return False
+
+    def _has_speech(self, clip_path, threshold=0.5):
+        """Check what fraction of a clip contains human speech.
+
+        Returns a float 0.0–1.0 representing the proportion of the clip
+        that is speech. Uses ffmpeg for fast decoding and Silero VAD for
+        speech detection.
+        """
+        if not self._load_vad():
+            return 0.0  # can't check — assume no speech
+
+        import subprocess
+        get_speech_ts = self._vad_utils[0]
+
+        # Decode to 16kHz mono S16LE PCM via ffmpeg (much faster than torchaudio)
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-i", clip_path,
+                    "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1",
+                ],
+                capture_output=True, timeout=15,
+            )
+            if result.returncode != 0 or not result.stdout:
+                return 0.0
+            pcm = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+        except Exception:
+            return 0.0
+
+        if len(pcm) < 1600:  # less than 100ms
+            return 0.0
+
+        wav = torch.from_numpy(pcm)
+        try:
+            speech_ts = get_speech_ts(wav, self._vad_model, sampling_rate=16000,
+                                      threshold=threshold)
+        except Exception as exc:
+            self._logger.warning(f"VAD inference failed: {exc}")
+            return 0.0
+
+        speech_samples = sum(t["end"] - t["start"] for t in speech_ts)
+        return speech_samples / len(pcm)
+
+    def _denoise_clip(self, clip_path, nr_db=12):
+        """Apply FFT-based noise reduction to an audio clip in-place.
+
+        Uses ffmpeg's afftdn filter which automatically estimates the noise
+        floor and subtracts it. The nr_db parameter controls how many dB
+        of noise to remove (higher = more aggressive).
+        """
+        import subprocess
+        tmp_path = clip_path + ".denoised.mp3"
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", clip_path,
+            "-af", f"afftdn=nr={nr_db}:nf=-25:tn=1,dynaudnorm=p=0.9:m=10",
+            "-q:a", "4",
+            tmp_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        if result.returncode == 0 and os.path.isfile(tmp_path):
+            os.replace(tmp_path, clip_path)
+            self._logger.info(f"Denoised {clip_path} (nr={nr_db}dB)")
+        else:
+            # Clean up failed temp file
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            err = result.stderr.decode() if result.stderr else "unknown"
+            self._logger.warning(f"afftdn failed on {clip_path}: {err}")
+
+    def _auto_smart_slice(self, clip_path, timestamp, bark_prob, peak_dbfs,
+                          avg_dbfs, doa, duration, settings, ch_energies=None,
+                          flac_path=None):
+        """Automatically detect sound regions and save only non-silent segments."""
+        import subprocess
+        import re
+
+        silence_thresh = int(settings.get("silence_thresh_db", -35))
+        min_seg = float(settings.get("min_segment_seconds", 0.5))
+        max_seg = float(settings.get("max_segment_seconds", 8))
+
+        # Run ffmpeg silencedetect
+        cmd = [
+            "ffmpeg", "-i", clip_path, "-af",
+            f"silencedetect=noise={silence_thresh}dB:d={min_seg}",
+            "-f", "null", "-",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        stderr = result.stderr
+
+        silence_starts = [float(m) for m in re.findall(r"silence_start: ([\d.]+)", stderr)]
+        silence_ends = [float(m) for m in re.findall(r"silence_end: ([\d.]+)", stderr)]
+
+        # Get total duration
+        dur_match = re.search(r"Duration: (\d+):(\d+):([\d.]+)", stderr)
+        if dur_match:
+            total_dur = int(dur_match.group(1)) * 3600 + int(dur_match.group(2)) * 60 + float(dur_match.group(3))
+        else:
+            total_dur = duration
+
+        # Build sound regions (inverse of silence)
+        sound_regions = []
+        pos = 0.0
+        for i, s_start in enumerate(silence_starts):
+            if s_start > pos + min_seg:
+                sound_regions.append((pos, s_start))
+            if i < len(silence_ends):
+                pos = silence_ends[i]
+            else:
+                pos = total_dur
+        if pos < total_dur - min_seg:
+            sound_regions.append((pos, total_dur))
+
+        # If no silence detected, whole file is sound
+        if not silence_starts and total_dur > 0:
+            sound_regions = [(0, total_dur)]
+
+        if not sound_regions:
+            self._logger.info("Auto smart-slice: all silence — discarding clip")
+            for p in [clip_path, flac_path]:
+                try:
+                    if p: os.remove(p)
+                except OSError:
+                    pass
+            return
+
+        # Extract each sound region as a separate segment
+        base_name = os.path.splitext(os.path.basename(clip_path))[0]
+        seg_count = 0
+
+        for i, (start, end) in enumerate(sound_regions):
+            seg_dur = end - start
+            if seg_dur < min_seg:
+                continue
+
+            # Sub-split if region > max_segment_seconds
+            sub_regions = []
+            if seg_dur > max_seg * 1.5:
+                p = start
+                while p < end - min_seg:
+                    sub_regions.append((p, min(p + max_seg, end)))
+                    p += max_seg
+            else:
+                sub_regions = [(start, end)]
+
+            for j, (ss, se) in enumerate(sub_regions):
+                seg_label = f"_a{i:02d}_{j:02d}"
+                out_mp3 = f"./clips/{base_name}{seg_label}.mp3"
+                d = se - ss
+
+                # Slice mono MP3 segment
+                ffcmd = [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-ss", f"{ss:.3f}", "-t", f"{d:.3f}",
+                    "-i", clip_path,
+                    "-ac", "1", "-q:a", "4", out_mp3,
+                ]
+                try:
+                    r = subprocess.run(ffcmd, capture_output=True, timeout=15)
+                    if r.returncode != 0:
+                        continue
+                except Exception:
+                    continue
+
+                # Slice 4-channel FLAC segment (if source FLAC exists)
+                if flac_path and os.path.isfile(flac_path):
+                    out_flac = f"./clips/{base_name}{seg_label}_4ch.flac"
+                    try:
+                        subprocess.run(
+                            [
+                                "ffmpeg", "-y", "-loglevel", "error",
+                                "-ss", f"{ss:.3f}", "-t", f"{d:.3f}",
+                                "-i", flac_path,
+                                "-c:a", "flac", out_flac,
+                            ],
+                            capture_output=True, timeout=15,
+                        )
+                    except Exception:
+                        pass  # non-critical — mono MP3 is the primary
+
+                event_id = self._bark_logger.log_event(
+                    timestamp=timestamp, clip_path=out_mp3,
+                    bark_prob=bark_prob, peak_dbfs=peak_dbfs,
+                    avg_dbfs=avg_dbfs, duration=round(d, 1), doa=doa,
+                    ch_energies=ch_energies,
+                )
+                if event_id:
+                    self._uploader.enqueue(event_id, out_mp3)
+                seg_count += 1
+
+        self._logger.info(
+            f"Auto smart-slice: {len(sound_regions)} sound regions → "
+            f"{seg_count} segments from {clip_path}"
+        )
+        # Remove the full-length source files (segments replace them)
+        for p in [clip_path, flac_path]:
+            try:
+                if p: os.remove(p)
+            except OSError:
+                pass
 
     def get_last_pred(self):
         return self._model_last_pred

@@ -40,6 +40,7 @@ services:
       # Pass individual USB device nodes so the PS Eye appears as hw:1
       # (adjust Bus/Device numbers if they change after replug: check with lsusb)
       - /dev/bus/usb/001/002:/dev/bus/usb/001/002
+      
       # PS Eye camera — /dev/video2 (run `v4l2-ctl --list-devices` to verify)
       # Laptop built-in (/dev/video0, /dev/video1) intentionally excluded
       - /dev/video2:/dev/video2

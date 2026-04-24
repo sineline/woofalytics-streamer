@@ -168,6 +168,15 @@
     }
     .clip-del-btn:hover { background: rgba(239,68,68,.25); }
 
+    .lib-lbl-btn {
+      padding:4px 10px; border-radius:6px; font-size:.7rem; font-weight:600;
+      border:1px solid var(--border); background:transparent; color:var(--muted);
+      cursor:pointer; transition:all .15s; font-family:'Outfit';
+    }
+    .lib-lbl-btn:hover { border-color:rgba(255,255,255,.2); color:var(--text); }
+    .lib-lbl-active-bark { background:rgba(34,197,94,.2); border-color:var(--green); color:var(--green); }
+    .lib-lbl-active-not  { background:rgba(239,68,68,.2); border-color:var(--red); color:var(--red); }
+
     .no-clip-msg { color:var(--muted); font-size:.78rem; margin-bottom:10px; }
 
     /* ── Empty / loading ── */
@@ -188,6 +197,29 @@
       opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 9998;
     }
     #toast.show { opacity: 1; }
+
+    /* ── Pagination ── */
+    .pagination {
+      display:flex; align-items:center; justify-content:center; gap:8px;
+      padding:14px 0; margin-top:4px;
+    }
+    .page-btn {
+      background:var(--s2); border:1px solid var(--border); border-radius:8px;
+      color:var(--text); padding:6px 14px; font-family:'Outfit'; font-size:.82rem;
+      cursor:pointer; transition:all .15s; font-weight:500;
+    }
+    .page-btn:hover { border-color:var(--amber); color:var(--amber); }
+    .page-btn:disabled { opacity:.3; cursor:not-allowed; border-color:var(--border); color:var(--muted); }
+    .page-btn.active { background:rgba(245,158,11,.15); border-color:var(--amber); color:var(--amber); font-weight:700; }
+    .page-info {
+      font-size:.78rem; color:var(--muted); font-family:var(--mono);
+      padding:0 8px;
+    }
+    .page-size-select {
+      background:var(--s2); border:1px solid var(--border); border-radius:6px;
+      color:var(--muted); padding:4px 8px; font-size:.75rem; font-family:var(--mono);
+      outline:none; cursor:pointer; margin-left:8px;
+    }
   </style>
 </head>
 <body>
@@ -197,8 +229,8 @@
 <div class="toolbar">
   <h2>📼 Clip Library</h2>
   <div class="toolbar-right">
-    <input type="text" id="search-input" placeholder="Search clips…" oninput="applyFilters()">
-    <select id="sort-select" onchange="applyFilters()">
+    <input type="text" id="search-input" placeholder="Search clips…" oninput="currentPage=0;applyFilters()">
+    <select id="sort-select" onchange="currentPage=0;applyFilters()">
       <option value="newest">Newest first</option>
       <option value="oldest">Oldest first</option>
       <option value="loudest">Loudest</option>
@@ -206,6 +238,27 @@
     </select>
     <button class="btn btn-ghost" onclick="loadAll()">↻ Refresh</button>
   </div>
+</div>
+
+<!-- Processing toolbar -->
+<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:12px">
+  <input type="file" id="import-input" multiple accept=".mp3,.wav,.flac,.ogg,.m4a" style="display:none" onchange="importFiles(this.files)">
+  <button class="btn btn-ghost" onclick="document.getElementById('import-input').click()" style="color:var(--amber);border-color:var(--amber)">
+    📂 Import Audio
+  </button>
+  <button class="btn btn-ghost" id="slice-all-btn" onclick="sliceAll()" style="color:#22c55e;border-color:#22c55e">
+    ✂️ Smart-Slice All
+  </button>
+  <button class="btn btn-ghost" id="denoise-btn" onclick="denoiseAll()" style="color:#60a5fa;border-color:#60a5fa">
+    🔇 Denoise All
+  </button>
+  <button class="btn btn-ghost" id="speech-btn" onclick="filterSpeech()" style="color:#ef4444;border-color:#ef4444">
+    🗣️ Remove Speech
+  </button>
+  <button class="btn btn-ghost" id="silence-btn" onclick="cleanSilence()" style="color:#a855f7;border-color:#a855f7">
+    🔕 Clean Silence
+  </button>
+  <div id="process-status" style="flex:1;font-size:.78rem;color:var(--muted);display:flex;align-items:center;justify-content:flex-end;min-width:120px"></div>
 </div>
 
 <div class="stats" id="stats-strip"></div>
@@ -233,6 +286,7 @@
     <div class="clips-grid" id="clips-grid">
       <div class="empty">Loading clips…</div>
     </div>
+    <div class="pagination" id="pagination"></div>
   </div>
 
 </div>
@@ -245,6 +299,88 @@ let allEvents  = [];
 let allDogs    = [];
 let activeDog  = null;  // null = show all
 let selected   = new Set();
+let currentPage = 0;
+let pageSize = 20;
+
+// ── Processing helpers ───────────────────────────────────────────────────────
+function setStatus(msg) { document.getElementById('process-status').textContent = msg; }
+
+async function batchAction(url, body, btnId, label, confirmMsg) {
+  if (confirmMsg && !confirm(confirmMsg)) return;
+  const btn = document.getElementById(btnId);
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '⏳ Working…';
+  setStatus('Processing…');
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    const data = await r.json();
+    const msg = typeof label === 'function' ? label(data) : JSON.stringify(data);
+    toast(msg);
+    setStatus('');
+    await loadAll();
+  } catch (e) {
+    toast('Failed: ' + e.message);
+    setStatus('');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+function sliceAll() {
+  const longClips = allEvents.filter(e => (e.duration || 0) > 9);
+  batchAction('/api/clips/slice-all', {}, 'slice-all-btn',
+    d => `✂️ Sliced ${d.processed} clips → ${d.total_segments} segments`,
+    longClips.length
+      ? `Smart-slice ${longClips.length} clip(s) longer than 9s?\nSilences removed, sound regions extracted.`
+      : null
+  );
+  if (!longClips.length) toast('No long clips to slice');
+}
+
+function denoiseAll() {
+  batchAction('/api/clips/denoise-all', {}, 'denoise-btn',
+    d => `🔇 Denoised ${d.processed} clips (${d.nr_db} dB)`,
+    `Apply FFT noise reduction to all clips?\nThis removes background hiss and hum.`
+  );
+}
+
+function filterSpeech() {
+  batchAction('/api/clips/filter-speech', {}, 'speech-btn',
+    d => `🗣️ Checked ${d.checked} clips — deleted ${d.deleted} with speech`,
+    `Run speech detection on all clips?\nClips with human voices above the threshold will be PERMANENTLY deleted.`
+  );
+}
+
+function cleanSilence() {
+  batchAction('/api/clips/clean-silence', {}, 'silence-btn',
+    d => `🔕 Checked ${d.checked} clips — deleted ${d.deleted} silent clips`,
+    `Remove all clips that are pure silence?\nEmpty recordings will be permanently deleted.`
+  );
+}
+
+async function importFiles(fileList) {
+  if (!fileList || !fileList.length) return;
+  setStatus(`Uploading ${fileList.length} file(s)…`);
+  const form = new FormData();
+  for (const f of fileList) form.append('files', f);
+  try {
+    const r = await fetch('/api/clips/import', { method: 'POST', body: form });
+    const data = await r.json();
+    toast(`📂 Imported ${data.imported} file(s)`);
+    setStatus('');
+    document.getElementById('import-input').value = '';
+    await loadAll();
+  } catch (e) {
+    toast('Import failed: ' + e.message);
+    setStatus('');
+  }
+}
 
 // ── Waveform player state ────────────────────────────────────────────────────
 const players = {};         // id → { audio, animFrame, peaks }
@@ -271,7 +407,7 @@ async function loadAll() {
 
   const [dogsR, eventsR] = await Promise.all([
     fetch('/api/dogs').then(r => r.json()),
-    fetch('/api/events?limit=500').then(r => r.json()),
+    fetch('/api/events?limit=99999').then(r => r.json()),
   ]);
   allDogs   = dogsR;
   allEvents = eventsR;
@@ -327,6 +463,7 @@ function renderDogs() {
 
 function selectDog(dogId) {
   activeDog = dogId;
+  currentPage = 0;  // reset pagination
   renderDogs();
   applyFilters();
   document.getElementById('clips-title').textContent =
@@ -394,8 +531,14 @@ function applyFilters() {
     return 0;
   });
 
+  const totalPages = Math.max(1, Math.ceil(events.length / pageSize));
+  if (currentPage >= totalPages) currentPage = totalPages - 1;
+  if (currentPage < 0) currentPage = 0;
+  const pageEvents = events.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
+
   document.getElementById('clip-count').textContent = `${events.length} clip${events.length !== 1 ? 's' : ''}`;
-  renderClips(events);
+  renderClips(pageEvents);
+  renderLibPagination(events.length, totalPages);
 }
 
 // ── Clips grid ────────────────────────────────────────────────────────────────
@@ -419,6 +562,53 @@ function renderClips(events) {
   });
 }
 
+// ── Library pagination ────────────────────────────────────────────────────
+function renderLibPagination(totalItems, totalPages) {
+  const pg = document.getElementById('pagination');
+  if (totalPages <= 1) {
+    pg.innerHTML = totalItems ? `<span class="page-info">${totalItems} clips</span>` : '';
+    return;
+  }
+  const start = currentPage * pageSize + 1;
+  const end = Math.min((currentPage + 1) * pageSize, totalItems);
+  let btns = '';
+  btns += `<button class="page-btn" onclick="goLibPage(0)" ${currentPage===0?'disabled':''}>«</button>`;
+  btns += `<button class="page-btn" onclick="goLibPage(${currentPage-1})" ${currentPage===0?'disabled':''}>‹</button>`;
+  let pStart = Math.max(0, currentPage - 3);
+  let pEnd = Math.min(totalPages - 1, pStart + 6);
+  pStart = Math.max(0, pEnd - 6);
+  for (let i = pStart; i <= pEnd; i++) {
+    btns += `<button class="page-btn ${i===currentPage?'active':''}" onclick="goLibPage(${i})">${i+1}</button>`;
+  }
+  btns += `<button class="page-btn" onclick="goLibPage(${currentPage+1})" ${currentPage>=totalPages-1?'disabled':''}>›</button>`;
+  btns += `<button class="page-btn" onclick="goLibPage(${totalPages-1})" ${currentPage>=totalPages-1?'disabled':''}>»</button>`;
+  btns += `<span class="page-info">${start}–${end} of ${totalItems}</span>`;
+  btns += `<select class="page-size-select" onchange="setLibPageSize(+this.value)">
+    <option value="12" ${pageSize===12?'selected':''}>12</option>
+    <option value="20" ${pageSize===20?'selected':''}>20</option>
+    <option value="40" ${pageSize===40?'selected':''}>40</option>
+    <option value="80" ${pageSize===80?'selected':''}>80</option>
+  </select>`;
+  pg.innerHTML = btns;
+}
+
+function goLibPage(p) {
+  currentPage = p;
+  // Stop all audio
+  Object.values(players).forEach(pl => {
+    if (pl.audio) pl.audio.pause();
+    if (pl.animFrame) cancelAnimationFrame(pl.animFrame);
+  });
+  applyFilters();
+  document.getElementById('clips-grid').scrollIntoView({ behavior:'smooth', block:'start' });
+}
+
+function setLibPageSize(n) {
+  pageSize = n;
+  currentPage = 0;
+  applyFilters();
+}
+
 function buildClipCard(ev) {
   const color   = dogColor(ev.dog_id);
   const dogName = allDogs.find(d => d.dog_id === ev.dog_id)?.name || ev.dog_id || 'Unknown';
@@ -429,13 +619,16 @@ function buildClipCard(ev) {
   const prob    = ev.bark_prob  != null ? (ev.bark_prob * 100).toFixed(0) + '%' : '—';
   const doa     = ev.doa        != null ? ev.doa.toFixed(0) + '°' : '—';
   const isSel   = selected.has(ev.id);
+  const lbl     = ev.label;
 
   const dogOptions = allDogs.map(d =>
     `<option value="${d.dog_id}" ${d.dog_id === ev.dog_id ? 'selected' : ''}>${d.name}</option>`
   ).join('');
 
+  const lblBorder = lbl === 1 ? 'border-color:rgba(34,197,94,.4)' : lbl === 0 ? 'border-color:rgba(239,68,68,.4)' : '';
+
   return `
-    <div class="clip-card ${isSel ? 'selected' : ''}" id="card-${ev.id}">
+    <div class="clip-card ${isSel ? 'selected' : ''}" id="card-${ev.id}" style="${lblBorder}">
       <input type="checkbox" class="clip-select" ${isSel ? 'checked' : ''}
              onchange="toggleSelect(${ev.id}, this.checked)">
       <div class="clip-meta">
@@ -467,6 +660,10 @@ function buildClipCard(ev) {
         </div>
       ` : '<div class="no-clip-msg">No audio clip</div>'}
       <div class="clip-actions">
+        <div style="display:flex;gap:4px">
+          <button class="lib-lbl-btn ${lbl===1?'lib-lbl-active-bark':''}" onclick="event.stopPropagation();libSetLabel(${ev.id},1)" title="Label as bark">🐕 Bark</button>
+          <button class="lib-lbl-btn ${lbl===0?'lib-lbl-active-not':''}" onclick="event.stopPropagation();libSetLabel(${ev.id},0)" title="Label as not bark">✗ Not</button>
+        </div>
         <select class="tag-select" onchange="retagEvent(${ev.id}, this.value)">
           ${dogOptions}
         </select>
@@ -697,6 +894,19 @@ function clearSelection() {
   });
   selected.clear();
   document.getElementById('bulk-bar').classList.remove('visible');
+}
+
+// ── Labeling ──────────────────────────────────────────────────────────────────
+async function libSetLabel(id, label) {
+  await fetch(`/api/events/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label }),
+  });
+  const ev = allEvents.find(e => e.id === id);
+  if (ev) ev.label = label;
+  applyFilters();
+  toast(label === 1 ? '🐕 Labeled as Bark' : '✗ Labeled as Not Bark');
 }
 
 // ── CRUD actions ──────────────────────────────────────────────────────────────
