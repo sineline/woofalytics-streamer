@@ -13,21 +13,16 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      # Match the USB webcam mic by name substring.
-      # Change to "Andrea PureAudio" if using the original hardware.
-      - MIC_DEVICE_HINT=HDA Intel PCH
-      # Webcam mic is mono; set to 2 for the Andrea stereo array.
-      # Note: DOA estimation is skipped when MIC_CHANNELS != 2.
-      # hw:1,0 reports exactly 4 channels and 16000 Hz — no other values accepted.
-      - MIC_CHANNELS=2
-      # USB webcam mics typically support 48000 Hz, not 44100.
-      # Use 44100 for the Andrea PureAudio array.
-      - MIC_SAMPLE_RATE=44100
+      # Match any USB audio device (PS Eye names vary between reboots)
+      - MIC_DEVICE_HINT=USB
+      # USB 4ch mic (PS Eye style)
+      - MIC_CHANNELS=4
+      - MIC_SAMPLE_RATE=16000
       # --- YouTube Live Stream ---
-      # Paste your stream key from studio.youtube.com -> Go Live -> Stream
       - YOUTUBE_STREAM_KEY=
-      # PS Eye camera is /dev/video2 (laptop built-in is /dev/video0,1 — excluded)
-      - VIDEO_DEVICE=/dev/video2
+      # USB Camera — /dev/video3 (check with v4l2-ctl --list-devices)
+      - VIDEO_DEVICE=/dev/video3
+
       # How long after the last bark before the OSD resets to "Monitoring"
       - BARK_QUIET_SECONDS=10
       # Auto-save cooldown in seconds (min time between saved clips)
@@ -37,13 +32,11 @@ services:
     devices:
       # ALSA sound devices (microphone access)
       - /dev/snd:/dev/snd
-      # Pass individual USB device nodes so the PS Eye appears as hw:1
-      # (adjust Bus/Device numbers if they change after replug: check with lsusb)
-      - /dev/bus/usb/001/002:/dev/bus/usb/001/002
-      
-      # PS Eye camera — /dev/video2 (run `v4l2-ctl --list-devices` to verify)
-      # Laptop built-in (/dev/video0, /dev/video1) intentionally excluded
+      # Video devices (privileged mode gives access to all, but list explicitly)
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
       - /dev/video2:/dev/video2
+      - /dev/video3:/dev/video3
     group_add:
       - audio
     volumes:

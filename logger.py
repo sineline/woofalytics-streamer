@@ -65,7 +65,9 @@ class BarkLogger:
                             "upload_status TEXT", "upload_url TEXT",
                             "label INTEGER",
                             "ch_energies TEXT",
-                            "sound_class INTEGER"]:
+                            "sound_class INTEGER",
+                            "ai_note TEXT",
+                            "raw_clip_path TEXT"]:
                 try:
                     c.execute(f"ALTER TABLE events ADD COLUMN {col_def}")
                 except Exception:
@@ -79,6 +81,15 @@ class BarkLogger:
                 UPDATE events SET sound_class = 0
                 WHERE label = 0 AND sound_class IS NULL
             """)
+            # Backfill raw_clip_path for existing events with _4ch.flac files
+            rows = c.execute(
+                "SELECT id, clip_path FROM events WHERE raw_clip_path IS NULL AND clip_path IS NOT NULL"
+            ).fetchall()
+            for eid, cp in rows:
+                if cp and cp.endswith(".mp3"):
+                    flac = cp.rsplit(".", 1)[0] + "_4ch.flac"
+                    if os.path.isfile(flac):
+                        c.execute("UPDATE events SET raw_clip_path=? WHERE id=?", (flac, eid))
 
     # ── Dog identity helpers ──────────────────────────────────────────────────
 
@@ -117,7 +128,7 @@ class BarkLogger:
     # ── Event logging ─────────────────────────────────────────────────────────
 
     def log_event(self, timestamp, clip_path, bark_prob, peak_dbfs, avg_dbfs,
-                  duration, doa=90.0, dog_id=None, ch_energies=None):
+                  duration, doa=90.0, dog_id=None, ch_energies=None, raw_clip_path=None):
         with self._lock:
             try:
                 ch_json = json.dumps(ch_energies) if ch_energies else None
@@ -137,9 +148,9 @@ class BarkLogger:
                             )
                     cur = c.execute(
                         "INSERT INTO events "
-                        "(timestamp,clip_path,bark_prob,peak_dbfs,avg_dbfs,duration,doa,dog_id,ch_energies) "
-                        "VALUES (?,?,?,?,?,?,?,?,?)",
-                        (timestamp, clip_path, bark_prob, peak_dbfs, avg_dbfs, duration, doa, dog_id, ch_json),
+                        "(timestamp,clip_path,bark_prob,peak_dbfs,avg_dbfs,duration,doa,dog_id,ch_energies,raw_clip_path) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (timestamp, clip_path, bark_prob, peak_dbfs, avg_dbfs, duration, doa, dog_id, ch_json, raw_clip_path),
                     )
                     event_id = cur.lastrowid
                 self._logger.info(
@@ -160,12 +171,19 @@ class BarkLogger:
                     (status, url, event_id),
                 )
 
-    def set_label(self, event_id: int, label: int):
-        """Manually label an event: 1=bark, 0=not-bark (legacy compat)."""
+    def set_label(self, event_id: int, label):
+        """Manually label an event: 1=bark, 0=not-bark, None=clear."""
         with self._lock:
             with self._conn() as c:
                 c.execute("UPDATE events SET label=?, sound_class=? WHERE id=?",
                           (label, label, event_id))
+
+    def set_ai_note(self, event_id: int, note: str):
+        """Store an AI-generated description on an event."""
+        with self._lock:
+            with self._conn() as c:
+                c.execute("UPDATE events SET ai_note=? WHERE id=?",
+                          (note, event_id))
 
     def set_sound_class(self, event_id: int, class_id: int):
         """Set the sound class for an event (multi-class labeling)."""
@@ -271,7 +289,7 @@ class BarkLogger:
             cols_sel = (
                 "id,timestamp,clip_path,bark_prob,peak_dbfs,avg_dbfs,"
                 "duration,doa,dog_id,upload_status,upload_url,label,"
-                "ch_energies,sound_class"
+                "ch_energies,sound_class,ai_note,raw_clip_path"
             )
             if dog_id:
                 cur = c.execute(

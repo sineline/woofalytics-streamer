@@ -327,10 +327,16 @@ def _slice_clip(bark_logger, event_id, seg_seconds=5, smart=False,
 
 # ── AI labeling helper ───────────────────────────────────────────────────────
 
+import collections, datetime as _dt
+_ai_label_log = collections.deque(maxlen=50)  # last 50 calls
+
 def _ai_label_clip(bark_logger, event_id, settings):
     """Use Google Gemini to classify an audio clip as bark or not-bark."""
     api_key = settings.get("gemini_api_key", "")
+    ts = _dt.datetime.now().isoformat()
     if not api_key:
+        entry = {"ts": ts, "event_id": event_id, "status": "error", "error": "No API key"}
+        _ai_label_log.append(entry)
         return {"error": "Gemini API key not configured. Set it in Settings."}
 
     ev = bark_logger.get_event_by_id(event_id)
@@ -350,6 +356,7 @@ def _ai_label_clip(bark_logger, event_id, settings):
             audio_data = f.read()
 
         gemini_model = settings.get("gemini_model", "gemini-2.5-flash")
+        prompt = settings.get("gemini_prompt", "Is there a dog barking? Respond as JSON: {\"bark\": true/false, \"description\": \"...\"}")
 
         response = client.models.generate_content(
             model=gemini_model,
@@ -362,15 +369,7 @@ def _ai_label_clip(bark_logger, event_id, settings):
                                 "data": __import__("base64").b64encode(audio_data).decode(),
                             }
                         },
-                        {
-                            "text": (
-                                "Listen to this audio clip. Classify it as either 'bark' (dog barking) "
-                                "or 'not_bark' (any other sound: silence, talking, traffic, music, etc). "
-                                "Respond with ONLY a JSON object in this exact format, nothing else:\n"
-                                '{"label": "bark" or "not_bark", "confidence": 0.0-1.0, '
-                                '"description": "brief description of what you hear"}'
-                            ),
-                        },
+                        {"text": prompt},
                     ]
                 }
             ],
@@ -383,19 +382,34 @@ def _ai_label_clip(bark_logger, event_id, settings):
             text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         result = json.loads(text)
 
-        label_val = 1 if result.get("label") == "bark" else 0
+        # Support both old format {"label": "bark"} and new {"bark": true}
+        if "bark" in result and isinstance(result["bark"], bool):
+            is_bark = result["bark"]
+        else:
+            is_bark = result.get("label") == "bark"
+        label_val = 1 if is_bark else 0
+        description = result.get("description", "")
 
-        return {
+        out = {
             "event_id": event_id,
-            "ai_label": result.get("label", "unknown"),
+            "ai_label": "bark" if is_bark else "not_bark",
             "label": label_val,
-            "confidence": result.get("confidence", 0),
-            "description": result.get("description", ""),
+            "confidence": result.get("confidence", 1.0),
+            "description": description,
         }
+        _ai_label_log.append({"ts": ts, "event_id": event_id, "status": "ok",
+                              "clip": clip_path, "model": gemini_model, **out})
+        return out
     except json.JSONDecodeError as exc:
-        return {"error": f"Failed to parse AI response: {text[:200]}"}
+        err = f"Failed to parse AI response: {text[:200]}"
+        _ai_label_log.append({"ts": ts, "event_id": event_id, "status": "error",
+                              "clip": clip_path, "error": err})
+        return {"error": err}
     except Exception as exc:
-        return {"error": f"Gemini API error: {str(exc)}"}
+        err = f"Gemini API error: {str(exc)}"
+        _ai_label_log.append({"ts": ts, "event_id": event_id, "status": "error",
+                              "clip": clip_path, "error": err})
+        return {"error": err}
 
 
 # ── Augmentation helper ──────────────────────────────────────────────────────
@@ -782,6 +796,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             settings = cfg_store.get()
             result = _ai_label_clip(wa._bark_logger, int(event_id), settings)
+            if not result.get("error"):
+                wa._bark_logger.set_label(int(event_id), result["label"])
+                wa._bark_logger.set_ai_note(int(event_id), result.get("description", ""))
             self._send_json(result)
         elif parsed.path == "/api/ai/label-batch":
             event_ids = data.get("event_ids", [])
@@ -793,8 +810,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             for eid in event_ids:
                 r = _ai_label_clip(wa._bark_logger, int(eid), settings)
                 if not r.get("error"):
-                    # Auto-apply the label
                     wa._bark_logger.set_label(int(eid), r["label"])
+                    wa._bark_logger.set_ai_note(int(eid), r.get("description", ""))
                 results.append(r)
             self._send_json({"results": results, "count": len(results)})
 
@@ -807,6 +824,47 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             result = _augment_clips(wa._bark_logger, event_ids, augmentations)
             self._send_json(result)
+
+        # ── Spectral bark score ─────────────────────────────────────────
+        elif parsed.path == "/api/bark-score":
+            from bark_score import compute_bark_score
+            event_ids = data.get("event_ids", [])
+            if not event_ids:
+                self._send_json({"error": "event_ids required"}, 400)
+                return
+            results = []
+            for eid in event_ids:
+                ev = wa._bark_logger.get_event_by_id(int(eid))
+                if ev and ev.get("clip_path"):
+                    score_data = compute_bark_score(ev["clip_path"])
+                    score_data["event_id"] = eid
+                    results.append(score_data)
+            self._send_json({"results": results})
+
+        # ── Auto pre-label by model confidence ──────────────────────────
+        elif parsed.path == "/api/auto-prelabel":
+            bark_thresh = float(data.get("bark_threshold", 0.7))
+            not_bark_thresh = float(data.get("not_bark_threshold", 0.2))
+            event_ids = data.get("event_ids", [])
+            count_bark, count_not = 0, 0
+            for eid in event_ids:
+                ev = wa._bark_logger.get_event_by_id(int(eid))
+                if not ev or ev.get("label") is not None:
+                    continue  # skip already-labeled
+                prob = ev.get("bark_prob", 0)
+                if prob is None:
+                    continue
+                if prob >= bark_thresh:
+                    wa._bark_logger.set_label(int(eid), 1)
+                    count_bark += 1
+                elif prob <= not_bark_thresh:
+                    wa._bark_logger.set_label(int(eid), 0)
+                    count_not += 1
+            self._send_json({
+                "labeled_bark": count_bark,
+                "labeled_not_bark": count_not,
+                "skipped": len(event_ids) - count_bark - count_not,
+            })
 
         else:
             self._send_json({"error": "not found"}, 404)
@@ -827,10 +885,14 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
         # PATCH /api/events/<id>  { "dog_id": "Dog 2" }
         elif len(parts) == 3 and parts[0] == "api" and parts[1] == "events":
+            eid = int(parts[2])
             if "dog_id" in data:
-                wa._bark_logger.retag_event(int(parts[2]), data["dog_id"])
+                wa._bark_logger.retag_event(eid, data["dog_id"])
             if "label" in data:
-                wa._bark_logger.set_label(int(parts[2]), int(data["label"]))
+                lv = None if data["label"] is None else int(data["label"])
+                wa._bark_logger.set_label(eid, lv)
+            if "ai_note" in data:
+                wa._bark_logger.set_ai_note(eid, data["ai_note"])
             self._send_json({"ok": True})
         else:
             self._send_json({"error": "not found"}, 404)
@@ -937,6 +999,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/debug":
             self._send_json(wa.get_debug_info())
 
+        elif path == "/api/ai/log":
+            self._send_json({"calls": list(_ai_label_log), "total": len(_ai_label_log)})
+
         elif path == "/api/devices":
             self._send_json(wa.list_audio_devices())
 
@@ -953,10 +1018,37 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(cfg_store.get_public())
 
         elif path == "/api/devices/video":
-            # List /dev/video* devices visible in the container
+            # List /dev/video* devices with names from v4l2-ctl
             import glob as _g
+            import subprocess as _sp
             devs = sorted(_g.glob("/dev/video*"))
-            self._send_json([{"path": d} for d in devs])
+            # Try to get device names
+            name_map = {}
+            try:
+                out = _sp.check_output(
+                    ["v4l2-ctl", "--list-devices"],
+                    stderr=_sp.STDOUT, timeout=5
+                ).decode()
+                current_name = ""
+                for line in out.splitlines():
+                    line = line.rstrip()
+                    if not line:
+                        continue
+                    if not line.startswith("\t") and not line.startswith(" "):
+                        current_name = line.rstrip(":")
+                    else:
+                        dev = line.strip()
+                        if dev.startswith("/dev/video"):
+                            name_map[dev] = current_name
+            except Exception:
+                pass
+            result = []
+            for d in devs:
+                entry = {"path": d}
+                if d in name_map:
+                    entry["name"] = name_map[d]
+                result.append(entry)
+            self._send_json(result)
 
         elif path == "/api/log":
             n = int(qs.get("lines", ["40"])[0])

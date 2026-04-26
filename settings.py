@@ -52,6 +52,17 @@ _DEFAULT = {
     # ── AI labeling (Google Gemini) ─────────────────────────────────────────
     "gemini_api_key":       "",
     "gemini_model":         "gemini-2.5-flash",
+    "gemini_prompt":        (
+        "You are analyzing audio from an OUTDOOR microphone that monitors "
+        "dogs barking in the distance. The recording is low-quality, noisy, "
+        "and captures sounds from far away.\n\n"
+        "Is there a dog barking in this clip? Answer YES or NO, then briefly "
+        "describe what you actually hear.\n\n"
+        "IMPORTANT: Do NOT hallucinate sounds that a distant outdoor mic cannot "
+        "capture (e.g. panting, breathing, footsteps). Only describe audible sounds.\n\n"
+        "Respond with ONLY a JSON object, nothing else:\n"
+        '{"bark": true/false, "description": "what you hear"}'
+    ),
     # ── Auto-trim (smart slice on save) ────────────────────────────────────
     "auto_smart_slice":     True,
     "silence_thresh_db":    -45,

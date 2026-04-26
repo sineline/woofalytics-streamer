@@ -179,6 +179,13 @@
 
     .no-clip-msg { color:var(--muted); font-size:.78rem; margin-bottom:10px; }
 
+    .ai-note {
+      font-size:.72rem; color:var(--muted); font-style:italic;
+      padding:4px 8px; margin:6px 0 2px;
+      border-left:2px solid rgba(168,85,247,.4); background:rgba(168,85,247,.04);
+      border-radius:0 4px 4px 0;
+    }
+
     /* ── Empty / loading ── */
     .empty { color: var(--muted); text-align: center; padding: 48px; font-size:.9rem; }
 
@@ -659,10 +666,12 @@ function buildClipCard(ev) {
           </div>
         </div>
       ` : '<div class="no-clip-msg">No audio clip</div>'}
+      ${ev.ai_note ? `<div class="ai-note" title="AI description">🤖 ${ev.ai_note}</div>` : ''}
       <div class="clip-actions">
         <div style="display:flex;gap:4px">
           <button class="lib-lbl-btn ${lbl===1?'lib-lbl-active-bark':''}" onclick="event.stopPropagation();libSetLabel(${ev.id},1)" title="Label as bark">🐕 Bark</button>
           <button class="lib-lbl-btn ${lbl===0?'lib-lbl-active-not':''}" onclick="event.stopPropagation();libSetLabel(${ev.id},0)" title="Label as not bark">✗ Not</button>
+          ${lbl!==null&&lbl!==undefined ? `<button class="lib-lbl-btn" onclick="event.stopPropagation();libSetLabel(${ev.id},null)" title="Clear label" style="opacity:.6">↩</button>` : ''}
         </div>
         <select class="tag-select" onchange="retagEvent(${ev.id}, this.value)">
           ${dogOptions}
@@ -906,7 +915,7 @@ async function libSetLabel(id, label) {
   const ev = allEvents.find(e => e.id === id);
   if (ev) ev.label = label;
   applyFilters();
-  toast(label === 1 ? '🐕 Labeled as Bark' : '✗ Labeled as Not Bark');
+  toast(label === 1 ? '🐕 Labeled as Bark' : label === 0 ? '✗ Labeled as Not Bark' : '↩ Label cleared');
 }
 
 // ── CRUD actions ──────────────────────────────────────────────────────────────

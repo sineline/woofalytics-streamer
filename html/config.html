@@ -55,12 +55,6 @@
     }
     input[type=number]:focus { border-color:var(--amber); }
 
-    .btn-save {
-      margin-top:18px; width:100%; padding:10px;
-      background:var(--amber); color:#000; font-family:'Outfit'; font-size:.9rem; font-weight:600;
-      border:none; border-radius:10px; cursor:pointer; transition:opacity .2s;
-    }
-    .btn-save:hover { opacity:.85; }
     .save-msg { font-size:.8rem; margin-top:8px; color:var(--green); min-height:18px; text-align:center; }
 
     /* docker-compose snippet */
@@ -124,14 +118,15 @@
     <div class="edit-row">
       <div class="edit-label">Bark Detection Threshold<strong id="thresh-val">88%</strong></div>
       <input type="range" id="thresh" min="50" max="99" step="1" value="88"
-             oninput="document.getElementById('thresh-val').textContent=this.value+'%'">
+             oninput="document.getElementById('thresh-val').textContent=this.value+'%'"
+             onchange="saveRuntime()">
     </div>
     <div class="edit-row">
       <div class="edit-label">Auto-Save Cooldown (seconds)<strong id="cooldown-val">30 s</strong></div>
       <input type="range" id="cooldown" min="5" max="300" step="5" value="30"
-             oninput="document.getElementById('cooldown-val').textContent=this.value+' s'">
+             oninput="document.getElementById('cooldown-val').textContent=this.value+' s'"
+             onchange="saveRuntime()">
     </div>
-    <button class="btn-save" onclick="saveRuntime()">Save</button>
     <div class="save-msg" id="save-msg"></div>
   </div>
 
@@ -140,12 +135,12 @@
     <div class="card-title">🎙️ Microphone Device</div>
     <div class="field">
       <label>Input Device</label>
-      <select id="mic-device-sel"></select>
+      <select id="mic-device-sel" onchange="saveMic()"></select>
       <div class="field-hint">Restart container for this to take effect</div>
     </div>
     <div class="field">
       <label>Channels</label>
-      <select id="mic-ch">
+      <select id="mic-ch" onchange="saveMic()">
         <option value="1">1 (mono)</option>
         <option value="2">2 (stereo)</option>
         <option value="4" selected>4 (PS Eye / quad)</option>
@@ -153,7 +148,7 @@
     </div>
     <div class="field">
       <label>Sample Rate (Hz)</label>
-      <select id="mic-rate">
+      <select id="mic-rate" onchange="saveMic()">
         <option value="8000">8 000</option>
         <option value="16000" selected>16 000</option>
         <option value="44100">44 100</option>
@@ -162,10 +157,9 @@
     </div>
     <div class="field">
       <label>DOA Array Spacing (λ)</label>
-      <input type="text" id="mic-spacing" value="0.1">
+      <input type="text" id="mic-spacing" value="0.1" oninput="debounceSave('mic', saveMic)">
       <div class="field-hint">Inter-mic spacing as fraction of wavelength (PS Eye ≈ 0.62 at 16 kHz)</div>
     </div>
-    <button class="btn-save" onclick="saveMic()">Save Mic Settings</button>
     <div class="section-save-msg" id="mic-msg"></div>
   </div>
 
@@ -174,15 +168,14 @@
     <div class="card-title">📷 Camera Device</div>
     <div class="field">
       <label>Video Device</label>
-      <select id="vid-device-sel"></select>
-      <div class="field-hint">Lists all <code>/dev/video*</code> devices visible in the container. The PS Eye is usually <strong>/dev/video2</strong>. Changes apply instantly to the live preview.</div>
+      <select id="vid-device-sel" onchange="saveCam()"></select>
+      <div class="field-hint">Select a device — the camera switches instantly.</div>
     </div>
     <!-- Inline preview so you can confirm the right device -->
     <div style="margin-top:12px;border-radius:10px;overflow:hidden;aspect-ratio:4/3;background:#000;border:1px solid var(--border)">
       <img id="cfg-cam-preview" src="/video_feed" style="width:100%;height:100%;object-fit:cover"
            onerror="this.style.opacity='.3'" alt="camera preview">
     </div>
-    <button class="btn-save" onclick="saveCam()" style="margin-top:12px">Save Camera</button>
     <div class="section-save-msg" id="cam-msg"></div>
   </div>
 
@@ -192,12 +185,12 @@
     <div class="field">
       <label>Stream Key</label>
       <div class="key-row">
-        <input type="password" id="yt-key" placeholder="xxxx-xxxx-xxxx-xxxx" autocomplete="off">
+        <input type="password" id="yt-key" placeholder="xxxx-xxxx-xxxx-xxxx" autocomplete="off"
+               onchange="saveStream()">
         <button class="eye-btn" onclick="toggleKey()">👁</button>
       </div>
       <div class="field-hint">From <a href="https://studio.youtube.com" target="_blank" style="color:var(--amber)">studio.youtube.com</a> → Go Live → Stream key. Stored in Docker volume, not in env.</div>
     </div>
-    <button class="btn-save" onclick="saveStream()">Save Stream Settings</button>
     <div class="section-save-msg" id="stream-msg"></div>
     <div style="margin-top:12px;text-align:center">
       <a href="/stream" style="color:var(--amber);font-size:.82rem">→ Full streaming controls</a>
@@ -231,26 +224,25 @@
     </div>
     <div class="field">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-        <input type="checkbox" id="auto-slice-toggle" checked style="accent-color:var(--green);width:18px;height:18px">
+        <input type="checkbox" id="auto-slice-toggle" checked style="accent-color:var(--green);width:18px;height:18px" onchange="saveAutoSlice()">
         <span>Enable auto smart-slice on save</span>
       </label>
     </div>
     <div class="field">
       <label>Silence Threshold (dBFS)</label>
-      <input type="number" id="silence-thresh" value="-35" min="-60" max="-10" step="1">
+      <input type="number" id="silence-thresh" value="-35" min="-60" max="-10" step="1" onchange="saveAutoSlice()">
       <div class="field-hint">Audio below this level is considered silence. Lower = more sensitive (default: -35)</div>
     </div>
     <div class="field">
       <label>Min Segment Duration (s)</label>
-      <input type="number" id="min-seg" value="0.5" min="0.1" max="5" step="0.1">
+      <input type="number" id="min-seg" value="0.5" min="0.1" max="5" step="0.1" onchange="saveAutoSlice()">
       <div class="field-hint">Sound regions shorter than this are discarded (default: 0.5s)</div>
     </div>
     <div class="field">
       <label>Max Segment Duration (s)</label>
-      <input type="number" id="max-seg" value="8" min="2" max="30" step="1">
+      <input type="number" id="max-seg" value="8" min="2" max="30" step="1" onchange="saveAutoSlice()">
       <div class="field-hint">Sound regions longer than this are sub-split (default: 8s)</div>
     </div>
-    <button class="btn-save" onclick="saveAutoSlice()">Save Auto-Slice Settings</button>
     <div class="section-save-msg" id="slice-msg"></div>
   </div>
 
@@ -262,7 +254,7 @@
     </div>
     <div class="field">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-        <input type="checkbox" id="nr-toggle" checked style="accent-color:#60a5fa;width:18px;height:18px">
+        <input type="checkbox" id="nr-toggle" checked style="accent-color:#60a5fa;width:18px;height:18px" onchange="saveNR()">
         <span>Enable noise reduction</span>
       </label>
     </div>
@@ -270,12 +262,12 @@
       <label>Reduction Strength (dB)</label>
       <div style="display:flex;align-items:center;gap:12px">
         <input type="range" id="nr-db" min="3" max="30" step="1" value="12"
-               oninput="document.getElementById('nr-db-val').textContent=this.value+' dB'" style="flex:1">
+               oninput="document.getElementById('nr-db-val').textContent=this.value+' dB'"
+               onchange="saveNR()" style="flex:1">
         <strong id="nr-db-val" style="min-width:40px;text-align:right">12 dB</strong>
       </div>
       <div class="field-hint">Higher = more aggressive noise removal. 8–15 is recommended. Above 20 may affect bark quality.</div>
     </div>
-    <button class="btn-save" onclick="saveNR()">Save Noise Reduction</button>
     <div class="section-save-msg" id="nr-msg"></div>
   </div>
 
@@ -287,7 +279,7 @@
     </div>
     <div class="field">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-        <input type="checkbox" id="sf-toggle" checked style="accent-color:#ef4444;width:18px;height:18px">
+        <input type="checkbox" id="sf-toggle" checked style="accent-color:#ef4444;width:18px;height:18px" onchange="saveSF()">
         <span>Enable speech filter</span>
       </label>
     </div>
@@ -295,38 +287,22 @@
       <label>Speech Threshold</label>
       <div style="display:flex;align-items:center;gap:12px">
         <input type="range" id="sf-thresh" min="10" max="80" step="5" value="35"
-               oninput="document.getElementById('sf-thresh-val').textContent=this.value+'%'" style="flex:1">
+               oninput="document.getElementById('sf-thresh-val').textContent=this.value+'%'"
+               onchange="saveSF()" style="flex:1">
         <strong id="sf-thresh-val" style="min-width:40px;text-align:right">35%</strong>
       </div>
       <div class="field-hint">Delete clip if more than this % is speech. Lower = more aggressive filtering. 25–40% recommended.</div>
     </div>
-    <button class="btn-save" onclick="saveSF()">Save Speech Filter</button>
     <div class="section-save-msg" id="sf-msg"></div>
   </div>
 
   <!-- AI Labeling Config -->
+  <!-- AI Labeling card hidden — re-enable when needed
   <div class="card">
     <div class="card-title">🤖 AI Labeling (Google Gemini)</div>
-    <div class="field">
-      <label>Gemini API Key</label>
-      <div class="key-row">
-        <input type="password" id="gemini-key" placeholder="Enter API key" autocomplete="off">
-        <button class="eye-btn" onclick="toggleGeminiKey()">👁</button>
-      </div>
-      <div class="field-hint" id="gemini-status">Get a free key at <a href="https://aistudio.google.com" target="_blank" style="color:var(--amber)">aistudio.google.com</a></div>
-    </div>
-    <div class="field">
-      <label>Model</label>
-      <select id="gemini-model">
-        <option value="gemini-2.5-flash">Gemini 2.5 Flash (fast, cheap)</option>
-        <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite (fastest)</option>
-        <option value="gemini-3-flash">Gemini 3 Flash (newest)</option>
-      </select>
-      <div class="field-hint">Model used for AI-assisted audio classification on the Train page</div>
-    </div>
-    <button class="btn-save" onclick="saveAI()">Save AI Settings</button>
-    <div class="section-save-msg" id="ai-msg"></div>
+    ...
   </div>
+  -->
 
 </div>
 
@@ -334,6 +310,13 @@
 <script>
 let currentConfig = null;
 let currentSettings = null;
+
+// Debounce helper for text/number inputs
+const _debounceTimers = {};
+function debounceSave(key, fn, ms = 600) {
+  clearTimeout(_debounceTimers[key]);
+  _debounceTimers[key] = setTimeout(fn, ms);
+}
 
 function row(label, value, badge) {
   const b = badge ? ` <span class="${badge[0]}">${badge[1]}</span>` : '';
@@ -348,12 +331,14 @@ function toggleKey() {
 
 // ── Load all data ────────────────────────────────────────────────────────────
 async function loadAll() {
+  try {
   const [cfg, settings, adevs, vdevs] = await Promise.all([
-    fetch('/api/config').then(r => r.json()),
-    fetch('/api/settings').then(r => r.json()),
-    fetch('/api/devices').then(r => r.json()),
-    fetch('/api/devices/video').then(r => r.json()),
+    fetch('/api/config').then(r => r.json()).catch(e => { console.error('config fetch failed', e); return null; }),
+    fetch('/api/settings').then(r => r.json()).catch(e => { console.error('settings fetch failed', e); return {}; }),
+    fetch('/api/devices').then(r => r.json()).catch(e => { console.error('devices fetch failed', e); return []; }),
+    fetch('/api/devices/video').then(r => r.json()).catch(e => { console.error('video devices fetch failed', e); return []; }),
   ]);
+  if (!cfg) { console.error('Config not loaded'); return; }
   currentConfig   = cfg;
   currentSettings = settings;
 
@@ -408,22 +393,30 @@ async function loadAll() {
   document.getElementById('sf-thresh').value = sfPct;
   document.getElementById('sf-thresh-val').textContent = sfPct + '%';
 
-  // ── AI / Gemini ────────────────────────────────────────────────────────────
+  // ── AI / Gemini (hidden — guarded) ──────────────────────────────────────────
   const gst = document.getElementById('gemini-status');
-  if (settings.gemini_api_key_set) {
+  if (gst && settings.gemini_api_key_set) {
     gst.innerHTML = '✓ API key configured';
     gst.style.color = 'var(--green)';
-    document.getElementById('gemini-key').placeholder = '(key set — enter new to change)';
+    const gkey = document.getElementById('gemini-key');
+    if (gkey) gkey.placeholder = '(key set — enter new to change)';
   }
   const modelEl = document.getElementById('gemini-model');
-  const curModel = settings.gemini_model || 'gemini-2.5-flash';
-  if ([...modelEl.options].some(o => o.value === curModel)) modelEl.value = curModel;
+  if (modelEl) {
+    const curModel = settings.gemini_model || 'gemini-2.5-flash';
+    if ([...modelEl.options].some(o => o.value === curModel)) modelEl.value = curModel;
+  }
+  const promptEl = document.getElementById('gemini-prompt');
+  if (promptEl && settings.gemini_prompt) promptEl.value = settings.gemini_prompt;
 
   // ── Video device dropdown ──────────────────────────────────────────────────
   const vsel = document.getElementById('vid-device-sel');
   const curVid = settings.video_device || cfg.stream.video_device;
   vsel.innerHTML = vdevs.length
-    ? vdevs.map(d => `<option value="${d.path}" ${d.path === curVid ? 'selected' : ''}>${d.path}</option>`).join('')
+    ? vdevs.map(d => {
+        const label = d.name ? `${d.path} — ${d.name}` : d.path;
+        return `<option value="${d.path}" ${d.path === curVid ? 'selected' : ''}>${label}</option>`;
+      }).join('')
     : `<option value="${curVid}">${curVid}</option>`;
 
   // Stream key — show placeholder if set
@@ -438,6 +431,7 @@ async function loadAll() {
   ].join('');
 
   buildCompose(cfg, settings);
+  } catch(err) { console.error('loadAll error:', err); }
 }
 
 // ── Compose snippet ──────────────────────────────────────────────────────────
@@ -510,7 +504,6 @@ async function saveRuntime() {
 
 async function saveMic() {
   await saveTo('/api/settings', {
-    mic_device_index:  parseInt(document.getElementById('mic-device-sel').value),
     mic_channels:      parseInt(document.getElementById('mic-ch').value),
     mic_sample_rate:   parseInt(document.getElementById('mic-rate').value),
     mic_array_spacing: parseFloat(document.getElementById('mic-spacing').value),
@@ -573,6 +566,7 @@ function toggleGeminiKey() {
 async function saveAI() {
   const patch = {
     gemini_model: document.getElementById('gemini-model').value,
+    gemini_prompt: document.getElementById('gemini-prompt').value,
   };
   const key = document.getElementById('gemini-key').value.trim();
   if (key) patch.gemini_api_key = key;

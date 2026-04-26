@@ -333,9 +333,23 @@
         <button class="filter-btn" onclick="setFilter('unlabelled',this)">Unlabelled</button>
         <button class="filter-btn" onclick="setFilter('bark',this)">Bark ✓</button>
         <button class="filter-btn" onclick="setFilter('notbark',this)">Not-Bark ✓</button>
+        <span style="border-left:1px solid var(--border);height:20px;margin:0 4px"></span>
+        <select id="sort-by" onchange="renderGrid()" style="background:var(--s2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:.72rem;cursor:pointer">
+          <option value="date-desc">Newest first</option>
+          <option value="date-asc">Oldest first</option>
+          <option value="prob-desc">Confidence ↓</option>
+          <option value="prob-asc">Confidence ↑</option>
+          <option value="score-desc">Bark Score ↓</option>
+          <option value="score-asc">Bark Score ↑</option>
+        </select>
+      </div>
+      <div class="filter-row" style="margin-top:6px">
         <button class="select-all-btn" onclick="labelAll(1)">✓ All → Bark</button>
         <button class="select-all-btn" onclick="labelAll(0)" style="color:var(--red)">✗ All → Not-Bark</button>
-        <button class="select-all-btn" onclick="aiLabelAll()" style="color:var(--blue)">🤖 AI Label All</button>
+        <button class="select-all-btn" onclick="clearAllLabels()" style="color:var(--muted)">↩ Clear Labels</button>
+        <span style="border-left:1px solid var(--border);height:20px;margin:0 4px"></span>
+        <button class="select-all-btn" onclick="autoPrelabel()" style="color:var(--blue)" title="Auto-label based on model confidence">⚡ Auto Pre-label</button>
+        <button class="select-all-btn" onclick="computeBarkScores()" style="color:var(--amber)" title="Compute spectral bark scores for all clips">📊 Bark Scores</button>
       </div>
 
       <div class="clip-grid" id="clip-grid">
@@ -405,21 +419,7 @@
       </div>
     </div>
 
-    <!-- AI Labeling -->
-    <div class="card">
-      <div class="card-title">🤖 AI-Assisted Labeling</div>
-      <div class="field" style="margin-bottom:10px">
-        <label style="font-size:.78rem;color:var(--muted)">Gemini API Key</label>
-        <div style="display:flex;gap:6px">
-          <input type="password" id="gemini-key" placeholder="Enter API key" style="flex:1;background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:6px 10px;font-size:.8rem;outline:none">
-          <button onclick="saveGeminiKey()" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--amber);padding:6px 12px;cursor:pointer;font-size:.78rem;white-space:nowrap">Save</button>
-        </div>
-        <div id="gemini-status" style="font-size:.72rem;color:var(--muted);margin-top:4px"></div>
-      </div>
-      <div style="font-size:.75rem;color:var(--muted);line-height:1.5">
-        Uses Google Gemini to listen to each clip and classify it as bark or not-bark. Saves hours of manual labeling.
-      </div>
-    </div>
+
 
     <!-- Model info -->
     <div class="card">
@@ -443,6 +443,7 @@ let activeCtx = null;          // current canvas rendering context
 let activeAnimFrame = null;    // animationFrame handle
 let currentPage = 0;
 let pageSize = 25;
+let barkScores = {};  // event_id → spectral bark score (0.0-1.0)
 
 // ── Load clips ─────────────────────────────────────────────────────────────────
 async function loadClips() {
@@ -482,6 +483,16 @@ function getFilteredClips() {
   if (filter === 'unlabelled') clips = clips.filter(e => labels[e.id] === undefined);
   else if (filter === 'bark')   clips = clips.filter(e => labels[e.id] === 1);
   else if (filter === 'notbark') clips = clips.filter(e => labels[e.id] === 0);
+
+  // Sort
+  const sort = document.getElementById('sort-by')?.value || 'date-desc';
+  if (sort === 'date-desc')  clips.sort((a, b) => b.id - a.id);
+  else if (sort === 'date-asc')   clips.sort((a, b) => a.id - b.id);
+  else if (sort === 'prob-desc')  clips.sort((a, b) => (b.bark_prob || 0) - (a.bark_prob || 0));
+  else if (sort === 'prob-asc')   clips.sort((a, b) => (a.bark_prob || 0) - (b.bark_prob || 0));
+  else if (sort === 'score-desc') clips.sort((a, b) => (barkScores[b.id] || 0) - (barkScores[a.id] || 0));
+  else if (sort === 'score-asc')  clips.sort((a, b) => (barkScores[a.id] || 0) - (barkScores[b.id] || 0));
+
   return clips;
 }
 
@@ -520,6 +531,10 @@ function renderGrid() {
 
     // Label status indicator
     const dotColor = lbl === 1 ? 'var(--green)' : lbl === 0 ? 'var(--red)' : 'rgba(255,255,255,.15)';
+    const bscore = barkScores[e.id];
+    const scoreHtml = bscore !== undefined
+      ? `<span style="font-size:.68rem;font-family:var(--mono);color:${bscore > 0.5 ? 'var(--green)' : bscore > 0.3 ? 'var(--amber)' : 'var(--red)'};margin-left:6px;opacity:.8" title="Spectral bark score">📊${(bscore*100).toFixed(0)}%</span>`
+      : '';
 
     return `<div class="clip-row ${rowCls}" id="row-${e.id}" onclick="expandClip(${e.id})" data-id="${e.id}">
       <div class="clip-row-header">
@@ -530,11 +545,15 @@ function renderGrid() {
             : `<span class="dur-badge dur-short" style="margin-left:6px">${dur}</span>`
           }
         </div>
-        <span class="clip-prob" style="color:${probCol}">${prob}</span>
+        <div style="display:flex;align-items:center;gap:2px">
+          <span class="clip-prob" style="color:${probCol}">${prob}</span>
+          ${scoreHtml}
+        </div>
         <div class="label-pills">
           <span class="label-status-dot" style="background:${dotColor}"></span>
           <button class="label-pill bark ${lbl===1?'active-bark':''}" onclick="event.stopPropagation();setLabel(${e.id},1)">🐕 Bark</button>
           <button class="label-pill notbark ${lbl===0?'active-notbark':''}" onclick="event.stopPropagation();setLabel(${e.id},0)">✗ Not</button>
+          ${lbl!==undefined ? `<button class="label-pill" onclick="event.stopPropagation();clearLabel(${e.id})" title="Clear label" style="opacity:.5;font-size:.7rem">↩</button>` : ''}
         </div>
       </div>
       <div class="player-expanded ${activeClipId === e.id ? 'open' : ''}" id="player-${e.id}">
@@ -585,10 +604,6 @@ function renderGrid() {
         </div>
         ` : ''}
         <div style="margin-top:6px;display:flex;gap:6px;align-items:center">
-          <button class="slice-btn" style="border-color:var(--blue);color:var(--blue);background:rgba(59,130,246,.06);font-size:.75rem;padding:5px 12px;width:auto"
-                  id="ai-btn-${e.id}" onclick="event.stopPropagation();aiLabel(${e.id})">
-            🤖 AI Label
-          </button>
           <button class="slice-btn" style="border-color:var(--red);color:var(--red);background:rgba(239,68,68,.06);font-size:.75rem;padding:5px 12px;width:auto"
                   onclick="event.stopPropagation();deleteClip(${e.id})">
             🗑 Delete
@@ -945,6 +960,94 @@ async function labelAll(label) {
   updateSummary();
 }
 
+async function clearLabel(id) {
+  delete labels[id];
+  fetch(`/api/events/${id}`, {
+    method:'PATCH', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({label: null}),
+  });
+  renderGrid();
+  updateSummary();
+  showToast('↩ Label cleared');
+}
+
+async function clearAllLabels() {
+  const visible = getFilteredClips().filter(e => labels[e.id] !== undefined);
+  if (!visible.length) return;
+  if (!confirm(`Clear labels from ${visible.length} clips in current filter?`)) return;
+  for (const e of visible) {
+    delete labels[e.id];
+    fetch(`/api/events/${e.id}`, {
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({label: null}),
+    });
+  }
+  renderGrid();
+  updateSummary();
+  showToast(`↩ Cleared ${visible.length} labels`);
+}
+
+// ── Auto pre-label by model confidence ───────────────────────────────────────
+async function autoPrelabel() {
+  const unlabelled = getFilteredClips().filter(e => labels[e.id] === undefined);
+  if (!unlabelled.length) { alert('No unlabelled clips to pre-label'); return; }
+
+  const barkTh = parseFloat(prompt('Bark threshold (label as bark if confidence ≥ this):', '0.7'));
+  if (isNaN(barkTh)) return;
+  const notBarkTh = parseFloat(prompt('Not-bark threshold (label as not-bark if confidence ≤ this):', '0.2'));
+  if (isNaN(notBarkTh)) return;
+
+  const ids = unlabelled.map(e => e.id);
+  try {
+    const result = await fetch('/api/auto-prelabel', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ event_ids: ids, bark_threshold: barkTh, not_bark_threshold: notBarkTh }),
+    }).then(r => r.json());
+
+    // Update local labels
+    unlabelled.forEach(e => {
+      const p = e.bark_prob || 0;
+      if (p >= barkTh) labels[e.id] = 1;
+      else if (p <= notBarkTh) labels[e.id] = 0;
+    });
+
+    renderGrid();
+    updateSummary();
+    showToast(`⚡ Pre-labeled: ${result.labeled_bark} bark, ${result.labeled_not_bark} not-bark, ${result.skipped} skipped`);
+  } catch(err) {
+    showToast('Error: ' + err.message);
+  }
+}
+
+// ── Compute spectral bark scores ─────────────────────────────────────────────
+async function computeBarkScores() {
+  const clips = getFilteredClips();
+  if (!clips.length) { alert('No clips in current filter'); return; }
+  if (!confirm(`Compute spectral bark scores for ${clips.length} clips? This may take a moment.`)) return;
+
+  let done = 0;
+  const batchSize = 10;
+  for (let i = 0; i < clips.length; i += batchSize) {
+    const batch = clips.slice(i, i + batchSize);
+    const ids = batch.map(e => e.id);
+    try {
+      const result = await fetch('/api/bark-score', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ event_ids: ids }),
+      }).then(r => r.json());
+
+      (result.results || []).forEach(r => {
+        barkScores[r.event_id] = r.bark_score;
+      });
+    } catch(err) { console.error('Bark score batch error:', err); }
+    done += batch.length;
+    document.title = `Computing bark scores ${done}/${clips.length}…`;
+  }
+  document.title = 'Woofalytics — Train';
+  renderGrid();
+  showToast(`📊 Bark scores computed for ${Object.keys(barkScores).length} clips`);
+}
+
 // ── AI labeling ───────────────────────────────────────────────────────────────
 async function saveGeminiKey() {
   const key = document.getElementById('gemini-key').value.trim();
@@ -1004,8 +1107,7 @@ async function aiLabelAll() {
   if (!unlabelled.length) { alert('No unlabelled clips in current filter'); return; }
   if (!confirm(`AI-label ${unlabelled.length} unlabelled clips? This may take a few minutes.`)) return;
 
-  // Label one by one so user sees progress
-  let done = 0;
+  let done = 0, ok = 0, fail = 0;
   for (const e of unlabelled) {
     const btn = document.getElementById('ai-btn-' + e.id);
     if (btn) { btn.disabled = true; btn.textContent = '⏳…'; }
@@ -1015,24 +1117,37 @@ async function aiLabelAll() {
         body: JSON.stringify({ event_id: e.id }),
       });
       const result = await resp.json();
-      if (!result.error) {
+      if (result.error) {
+        console.warn(`AI label #${e.id} failed:`, result.error);
+        if (btn) btn.textContent = '⚠ Error';
+        fail++;
+        // If rate-limited, wait before retrying
+        if (result.error.includes('429') || result.error.includes('quota') || result.error.includes('rate')) {
+          showToast('⏳ Rate limited — waiting 30s…');
+          await new Promise(r => setTimeout(r, 30000));
+        }
+      } else {
         labels[e.id] = result.label;
-        fetch(`/api/events/${e.id}`, {
-          method:'PATCH', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({label: result.label}),
-        });
         if (btn) {
           const em = result.label === 1 ? '🐕' : '✗';
           btn.textContent = `${em} ${result.ai_label}`;
         }
+        ok++;
       }
-    } catch(err) { /* skip failed */ }
+    } catch(err) {
+      console.error(`AI label #${e.id} exception:`, err);
+      if (btn) btn.textContent = '⚠ Error';
+      fail++;
+    }
     done++;
-    document.title = `AI Labeling ${done}/${unlabelled.length}…`;
+    document.title = `AI Labeling ${done}/${unlabelled.length}… (✓${ok} ✗${fail})`;
+    // Small delay between calls to avoid rate limiting
+    if (done < unlabelled.length) await new Promise(r => setTimeout(r, 500));
   }
   document.title = 'Woofalytics — Train';
   renderGrid();
   updateSummary();
+  showToast(`AI labeling done: ${ok} labeled, ${fail} failed`);
 }
 
 
@@ -1096,7 +1211,7 @@ document.addEventListener('keydown', e => {
 async function startTraining() {
   const clips = Object.entries(labels).map(([id, label]) => {
     const ev = allClips.find(e => e.id == id);
-    return ev ? { path: ev.clip_path, label } : null;
+    return ev ? { path: ev.clip_path, raw_path: ev.raw_clip_path || null, label } : null;
   }).filter(Boolean);
 
   const mode   = document.querySelector('[name=train_mode]:checked').value;

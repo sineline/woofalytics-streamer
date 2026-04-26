@@ -142,6 +142,7 @@
     <div class="refresh-note">Auto-refreshes every 5 s</div>
   </div>
 
+
 </div>
 
 <script>
@@ -293,12 +294,38 @@ async function pollDebug() {
   } catch(e) { console.error(e); }
 }
 
+// ── AI Label Log ─────────────────────────────────────────────────────────────
+async function loadAILog() {
+  try {
+    const r = await fetch('/api/ai/log');
+    const { calls, total } = await r.json();
+    const box = document.getElementById('ai-log-box');
+    if (!calls || !calls.length) {
+      box.textContent = 'No AI labeling calls yet. Use the 🤖 AI Label button on the Train page.';
+      return;
+    }
+    box.innerHTML = calls.slice().reverse().map(c => {
+      const ts = c.ts ? c.ts.split('T')[1]?.split('.')[0] || c.ts : '—';
+      if (c.status === 'ok') {
+        const emoji = c.label === 1 ? '🐕' : '✗';
+        const conf = c.confidence != null ? (c.confidence * 100).toFixed(0) + '%' : '—';
+        return `<div style="color:var(--green)">[${ts}] ✓ #${c.event_id} → ${emoji} ${c.ai_label} (${conf}) — ${c.description || ''} <span style="color:var(--muted)">[${c.model || ''}]</span></div>`;
+      } else {
+        return `<div style="color:var(--red)">[${ts}] ✗ #${c.event_id} — ${c.error}</div>`;
+      }
+    }).join('');
+    box.scrollTop = 0;
+  } catch(e) { console.error(e); }
+}
+
 // Kick off
 pollDebug();
 loadDevices();
 loadLog();
+loadAILog();
 setInterval(pollDebug, 2000);
 setInterval(loadLog,   5000);
+setInterval(loadAILog, 5000);
 // Devices rarely change — load once then every 30s
 setInterval(loadDevices, 30000);
 </script>

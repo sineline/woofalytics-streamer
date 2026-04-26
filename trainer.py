@@ -288,7 +288,11 @@ def build_dataset(
     """
     X, y = [], []
     for item in clips:
-        waveform = _load_clip(item["path"])
+        # Prefer raw (unprocessed) audio for training — matches real-time input
+        train_path = item.get("raw_path") or item["path"]
+        if not os.path.isfile(train_path):
+            train_path = item["path"]  # fallback to denoised MP3
+        waveform = _load_clip(train_path)
         if waveform is None:
             continue
 
